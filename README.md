@@ -28,7 +28,44 @@
              実施設計・確認申請
 ```
 
-## クイックスタート
+## Web アプリ
+
+ブラウザから敷地条件を入力して、診断・判定・間取り・外観・事業費を画面で確認し、
+IFC やレポートをダウンロードできる。
+
+```bash
+pip install -r requirements.txt
+uvicorn webapp.main:app --reload      # http://127.0.0.1:8000
+```
+
+画面は左が入力フォーム（サンプル読込・敷地・用途地域・前面道路・ハザード・建築計画）、
+右が結果（診断スコア、建築可能判定、平面図／3D外観、建築費・総事業費、ダウンロード）。
+API ドキュメント（OpenAPI）は `/docs` で確認できる。
+
+| エンドポイント | 内容 |
+| --- | --- |
+| `GET /api/meta` | 用途地域・防火地域・構造などフォームの選択肢と既定値 |
+| `GET /api/samples` | サンプル敷地（フォーム初期値としてそのまま投入できる形） |
+| `GET /api/listings?address=` | 売地情報の検索と周辺相場（坪単価中央値） |
+| `POST /api/analyze` | 全工程を実行し、レポート・図面 SVG を含む結果を返す |
+| `POST /api/export/{fmt}` | 成果物のダウンロード（`ifc` / `obj` / `plan-svg` / `exterior-svg` / `report-md` / `report-json` / `permit-md`） |
+
+`POST /api/analyze` のリクエスト例:
+
+```json
+{
+  "address": "東京都世田谷区代田1-1-1",
+  "width_m": 14, "depth_m": 16,
+  "land_price_jpy": 95000000, "station_distance_m": 640,
+  "zoning": {"use_district": "第一種住居地域", "building_coverage_ratio": 0.6, "floor_area_ratio": 2.0},
+  "roads": [{"width_m": 6.0, "direction": "南", "frontage_m": 14.0}],
+  "options": {"household_size": 4, "structure": "木造", "grade": "標準"}
+}
+```
+
+敷地形状は `width_m` / `depth_m`（矩形）か `polygon`（頂点座標）のどちらかで指定する。
+
+## コマンドライン
 
 ```bash
 # 売地情報の検索と相場集計（不動産API層）
@@ -81,6 +118,7 @@ write_outputs(result, "out/")
 | BIM / IFC | `bim/ifc.py` | IFC4 の STEP ファイル生成（Storey / Slab / Wall / Space） |
 | 実施設計・確認申請 | `documents.py` | 申請概要、必要手続きの判定、設計図書チェックリスト |
 | パイプライン | `pipeline.py` | 上記の受け渡しとレポート生成 |
+| 画面・API | `webapp/` | FastAPI（`main.py` / `schemas.py`）と画面（`static/`） |
 
 ### 建築可能判定でみている規制
 
@@ -110,6 +148,12 @@ write_outputs(result, "out/")
 
 ```bash
 python3 -m unittest discover -s tests -t .
+```
+
+Web アプリの API テストは FastAPI と httpx が必要（未インストールならスキップされる）。
+
+```bash
+pip install -r requirements-dev.txt
 ```
 
 ## 制約

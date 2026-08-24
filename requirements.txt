@@ -1,0 +1,3 @@
+# Web アプリ（webapp/）の実行に必要な依存。算定エンジン（ai_land_design/）は標準ライブラリのみで動く。
+fastapi>=0.110
+uvicorn[standard]>=0.29

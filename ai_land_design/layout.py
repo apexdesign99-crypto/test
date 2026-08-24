@@ -281,8 +281,20 @@ def generate(
     )
 
 
-def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 20.0) -> str:
-    """指定階の平面図を SVG 文字列で返す（1m = `scale` px）。"""
+def _fit_label(name: str, width_px: float, font_px: float) -> str:
+    """室名が矩形の幅に収まらない場合に切り詰める。"""
+    max_chars = max(1, int(width_px / font_px))
+    if len(name) <= max_chars:
+        return name
+    return name[: max(1, max_chars - 1)] + "…"
+
+
+def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0) -> str:
+    """指定階の平面図を SVG 文字列で返す（1m = `scale` px）。
+
+    小さい室ではラベルが枠からはみ出すため、室の寸法に応じて文字サイズを落とし、
+    面積表記の省略と室名の切り詰めを行う。完全な室名は `<title>` に残す。
+    """
     floor = next((f for f in building.floors if f.storey == storey), None)
     if floor is None:
         raise ValueError(f"{storey}階は存在しない")
@@ -309,19 +321,28 @@ def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 20.0)
 
     for room in floor.rooms:
         x0, y0 = px((room.x, room.y + room.h))
+        w_px, h_px = room.w * scale, room.h * scale
         parts.append(
-            f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{room.w * scale:.1f}" '
-            f'height="{room.h * scale:.1f}" fill="#ffffff" stroke="#333333" stroke-width="2"/>'
+            f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{w_px:.1f}" '
+            f'height="{h_px:.1f}" fill="#ffffff" stroke="#333333" stroke-width="2"/>'
         )
+
         cx, cy = px((room.x + room.w / 2, room.y + room.h / 2))
+        font = max(7.0, min(12.0, min(w_px, h_px) / 5.5))
+        show_area = h_px >= font * 3.2 and w_px >= font * 5
+        label = _fit_label(room.name, w_px - 4, font)
+        name_y = cy - 4 if show_area else cy + font / 3
         parts.append(
-            f'<text x="{cx:.1f}" y="{cy - 4:.1f}" font-size="11" text-anchor="middle" '
-            f'font-family="sans-serif" fill="#222222">{room.name}</text>'
+            f'<text x="{cx:.1f}" y="{name_y:.1f}" font-size="{font:.1f}" text-anchor="middle" '
+            f'font-family="sans-serif" fill="#222222">{label}'
+            f'<title>{room.name} {room.jo:.1f}帖 / {room.area_m2:.1f}m²</title></text>'
         )
-        parts.append(
-            f'<text x="{cx:.1f}" y="{cy + 10:.1f}" font-size="9" text-anchor="middle" '
-            f'font-family="sans-serif" fill="#666666">{room.jo:.1f}帖 / {room.area_m2:.1f}m²</text>'
-        )
+        if show_area:
+            parts.append(
+                f'<text x="{cx:.1f}" y="{cy + font:.1f}" font-size="{font * 0.8:.1f}" '
+                f'text-anchor="middle" font-family="sans-serif" fill="#666666">'
+                f'{room.jo:.1f}帖 / {room.area_m2:.1f}m²</text>'
+            )
 
     parts.append(
         f'<text x="8" y="18" font-size="13" font-family="sans-serif" fill="#111111">'

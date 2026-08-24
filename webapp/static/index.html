@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI LAND DESIGN — 土地診断から事業費・BIM まで</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232f6f4f'/%3E%3Cpath d='M6 22 16 9l10 13z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="header">
+  <div class="header-inner">
+    <div>
+      <h1>AI LAND DESIGN</h1>
+      <p class="tagline">土地診断 → 建築可能判定 → 間取り → 事業費 → BIM(IFC) → 確認申請準備</p>
+    </div>
+    <a class="doc-link" href="/docs" target="_blank" rel="noopener">API ドキュメント</a>
+  </div>
+</header>
+
+<main class="layout">
+  <!-- 入力フォーム -->
+  <form id="site-form" class="panel form" autocomplete="off">
+    <section class="form-section">
+      <div class="section-head"><h2>敷地</h2></div>
+      <label class="field">
+        <span>サンプルを読み込む</span>
+        <select id="sample-select"><option value="">（選択してください）</option></select>
+      </label>
+      <label class="field">
+        <span>所在地</span>
+        <input type="text" name="address" placeholder="東京都世田谷区代田1-1-1">
+      </label>
+      <div class="field">
+        <span>敷地形状</span>
+        <div class="segmented" role="tablist">
+          <button type="button" class="seg active" data-shape="rect">間口 × 奥行</button>
+          <button type="button" class="seg" data-shape="polygon">頂点座標</button>
+        </div>
+      </div>
+      <div id="shape-rect" class="grid-2">
+        <label class="field"><span>間口 (m)</span><input type="number" name="width_m" value="14" step="any" min="1"></label>
+        <label class="field"><span>奥行 (m)</span><input type="number" name="depth_m" value="16" step="any" min="1"></label>
+      </div>
+      <label class="field hidden" id="shape-polygon">
+        <span>頂点座標（1行に「x, y」/ 単位 m・反時計回り）</span>
+        <textarea name="polygon" rows="5" placeholder="0, 0&#10;16, 0&#10;16, 9&#10;4, 9&#10;4, 14&#10;0, 14"></textarea>
+      </label>
+      <p class="hint" id="area-hint">敷地面積 224.00 m²（67.76 坪）</p>
+      <div class="grid-2">
+        <label class="field"><span>土地価格 (円)</span><input type="number" name="land_price_jpy" value="95000000" step="any" min="0"></label>
+        <label class="field"><span>駅距離 (m)</span><input type="number" name="station_distance_m" value="640" step="any" min="0"></label>
+      </div>
+    </section>
+
+    <section class="form-section">
+      <div class="section-head"><h2>用途地域・規制</h2></div>
+      <label class="field">
+        <span>用途地域</span>
+        <select name="use_district" id="use-district"></select>
+      </label>
+      <div class="grid-2">
+        <label class="field"><span>建蔽率 (%)</span><input type="number" name="bcr" value="60" step="any" min="10" max="100"></label>
+        <label class="field"><span>容積率 (%)</span><input type="number" name="far" value="200" step="any" min="50" max="1500"></label>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>防火地域</span><select name="fire_zone" id="fire-zone"></select></label>
+        <label class="field"><span>絶対高さ制限 (m)</span><input type="number" name="height_limit_m" placeholder="指定なし" step="any" min="0"></label>
+      </div>
+      <label class="field"><span>外壁後退 (m)</span><input type="number" name="wall_setback_m" value="0" step="any" min="0"></label>
+      <div class="checks">
+        <label><input type="checkbox" name="is_corner_lot"> 角地</label>
+        <label><input type="checkbox" name="shadow_regulation"> 日影規制</label>
+        <label><input type="checkbox" name="scenic_district"> 風致地区等</label>
+      </div>
+    </section>
+
+    <section class="form-section">
+      <div class="section-head">
+        <h2>前面道路</h2>
+        <button type="button" class="ghost" id="add-road">＋ 追加</button>
+      </div>
+      <div id="roads"></div>
+    </section>
+
+    <section class="form-section">
+      <div class="section-head"><h2>ハザード</h2></div>
+      <div class="grid-2">
+        <label class="field"><span>浸水想定 (m)</span><input type="number" name="flood_depth_m" value="0" step="any" min="0"></label>
+        <label class="field"><span>揺れやすさ (1-5)</span><input type="number" name="quake_intensity_rank" value="3" step="1" min="1" max="5"></label>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" name="landslide_risk"> 土砂災害警戒区域</label>
+        <label><input type="checkbox" name="liquefaction_risk"> 液状化リスク</label>
+      </div>
+    </section>
+
+    <section class="form-section">
+      <div class="section-head"><h2>建築計画</h2></div>
+      <div class="grid-2">
+        <label class="field"><span>家族人数</span><input type="number" name="household_size" value="4" min="1" max="10"></label>
+        <label class="field"><span>階高 (m)</span><input type="number" name="floor_height_m" value="2.9" step="any" min="2.2" max="5"></label>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>構造</span><select name="structure" id="structure"></select></label>
+        <label class="field"><span>グレード</span><select name="grade" id="grade"></select></label>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>目標延床 (m²)</span><input type="number" name="target_floor_area_m2" placeholder="自動" step="any" min="20"></label>
+        <label class="field">
+          <span>相場坪単価 (円) <button type="button" class="ghost" id="fetch-market">周辺相場から取得</button></span>
+          <input type="number" name="market_unit_price_per_tsubo" placeholder="任意" step="any" min="0">
+        </label>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button type="submit" class="primary" id="submit-btn">診断する</button>
+      <span class="status" id="form-status"></span>
+    </div>
+  </form>
+
+  <!-- 結果 -->
+  <div class="results" id="results">
+    <div class="panel placeholder" id="placeholder">
+      <h2>敷地条件を入力して「診断する」</h2>
+      <p>接道義務・建蔽率・容積率・斜線制限を判定し、間取り、3D外観、建築費、総事業費、
+         IFC（BIM）、確認申請の準備資料までを自動生成します。</p>
+      <p class="hint">左のサンプルから読み込むと、すぐに動作を確認できます。</p>
+    </div>
+
+    <div id="result-body" class="hidden">
+      <section class="panel" id="diagnosis-card"></section>
+      <section class="panel" id="envelope-card"></section>
+      <section class="panel" id="plan-card"></section>
+      <section class="panel" id="cost-card"></section>
+      <section class="panel" id="export-card"></section>
+    </div>
+  </div>
+</main>
+
+<footer class="footer">
+  <p>出力は概算です。天空率・日影の詳細計算や条例・地区計画は未対応で、法適合の最終判断には建築士による設計と特定行政庁・指定確認検査機関への確認が必要です。</p>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

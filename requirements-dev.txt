@@ -1,0 +1,3 @@
+-r requirements.txt
+# API テスト（fastapi.testclient）が httpx を使う
+httpx>=0.27
