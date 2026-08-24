@@ -1,0 +1,16 @@
+[project]
+name = "ai-land-design"
+version = "0.1.0"
+description = "土地診断から建築可能判定・間取り・事業費・BIM(IFC)までを算出するパイプライン"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+ai-land-design = "ai_land_design.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ai_land_design*"]

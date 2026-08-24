@@ -1,0 +1,11 @@
+{
+  "listings": [
+    {"listing_id": "L001", "address": "東京都世田谷区代田1-1-1", "price_jpy": 95000000, "area_m2": 224.0, "station_distance_m": 640, "source": "sample"},
+    {"listing_id": "L002", "address": "東京都世田谷区代沢2-5-8", "price_jpy": 88000000, "area_m2": 165.3, "station_distance_m": 720, "source": "sample"},
+    {"listing_id": "L003", "address": "東京都世田谷区北沢3-2-1", "price_jpy": 112000000, "area_m2": 198.4, "station_distance_m": 480, "source": "sample"},
+    {"listing_id": "L004", "address": "東京都世田谷区松原1-9-4", "price_jpy": 74500000, "area_m2": 152.1, "station_distance_m": 950, "source": "sample"},
+    {"listing_id": "L005", "address": "東京都練馬区石神井町2-2-2", "price_jpy": 62000000, "area_m2": 143.0, "station_distance_m": 1100, "source": "sample"},
+    {"listing_id": "L006", "address": "東京都練馬区関町北5-1-2", "price_jpy": 58000000, "area_m2": 138.6, "station_distance_m": 1250, "source": "sample"},
+    {"listing_id": "L007", "address": "東京都中央区日本橋3-3-3", "price_jpy": 380000000, "area_m2": 216.0, "station_distance_m": 260, "source": "sample"}
+  ]
+}
