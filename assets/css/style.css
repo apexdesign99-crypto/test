@@ -815,6 +815,64 @@ a.card:hover {
   color: var(--navy-800);
 }
 
+.project {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.project__body {
+  padding: var(--space-6);
+}
+
+.project__label {
+  font-family: var(--font-en);
+  font-size: 12px;
+  letter-spacing: .18em;
+  color: var(--accent-dark);
+}
+
+.project__title {
+  margin-top: 8px;
+  font-size: clamp(22px, 3vw, 30px);
+  font-weight: 700;
+  letter-spacing: .06em;
+}
+
+.project__text {
+  margin-top: var(--space-3);
+  font-size: 15px;
+  color: var(--text-muted);
+}
+
+.project__visual {
+  min-height: 220px;
+  background:
+    linear-gradient(to top, rgba(11, 31, 52, .9) 10%, transparent 70%),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, .06) 0 2px, transparent 2px 40px),
+    linear-gradient(150deg, var(--navy-700), var(--navy-900));
+}
+
+@media (max-width: 767px) {
+  .project {
+    grid-template-columns: 1fr;
+  }
+
+  .project__body {
+    padding: var(--space-5);
+    order: 2;
+  }
+
+  .project__visual {
+    min-height: 150px;
+  }
+}
+
 /* ---------- 7. Sections ---------- */
 .prose > * + * {
   margin-top: var(--space-3);
