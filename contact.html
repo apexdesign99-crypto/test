@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>お問い合わせ | 大丸開発株式会社</title>
+    <meta name="description" content="工事のご相談、お見積り、土地活用、採用に関するお問い合わせを受け付けています。">
+    <meta name="format-detection" content="telephone=no">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="大丸開発株式会社">
+    <meta property="og:title" content="お問い合わせ | 大丸開発株式会社">
+    <meta property="og:description" content="工事のご相談、お見積り、土地活用、採用に関するお問い合わせを受け付けています。">
+    <link rel="stylesheet" href="assets/css/style.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main">本文へスキップ</a>
+    <header class="header">
+      <div class="header__inner">
+        <a class="logo" href="index.html">
+          <svg class="logo__mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><rect width="40" height="40" rx="3" fill="#0f2a44"></rect><path d="M8 29V11h8.6c5.4 0 9.1 3.5 9.1 9s-3.7 9-9.1 9H8Zm5-4h3.3c2.9 0 4.7-1.9 4.7-5s-1.8-5-4.7-5H13v10Z" fill="#fff"></path><path d="M28 11h4v18h-4z" fill="#b8842c"></path></svg>
+          <span class="logo__text">
+            <span class="logo__name">大丸開発</span>
+            <span class="logo__en">DAIMARU KAIHATSU CO., LTD.</span>
+          </span>
+        </a>
+        <button class="nav-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="global-nav" aria-label="メニューを開く">
+          <span class="nav-toggle__bar"></span>
+        </button>
+        <nav class="nav" id="global-nav" data-nav aria-label="グローバルナビゲーション">
+          <ul class="nav__list">
+            <li><a class="nav__link" href="index.html">ホーム</a></li>
+            <li><a class="nav__link" href="about.html">会社概要</a></li>
+            <li><a class="nav__link" href="business.html">事業内容</a></li>
+            <li><a class="nav__link" href="works.html">施工実績</a></li>
+            <li><a class="nav__link" href="recruit.html">採用情報</a></li>
+          </ul>
+          <a class="nav__cta" href="contact.html">お問い合わせ</a>
+        </nav>
+      </div>
+    </header>
+    <main id="main">
+      <div class="page-header">
+        <div class="container page-header__inner">
+          <p class="page-header__en">CONTACT</p>
+          <h1 class="page-header__title">お問い合わせ</h1>
+        </div>
+      </div>
+      <nav class="breadcrumb" aria-label="パンくずリスト">
+        <div class="container">
+          <ol>
+            <li><a href="index.html">ホーム</a></li>
+            <li aria-current="page">お問い合わせ</li>
+          </ol>
+        </div>
+      </nav>
+      <section class="section">
+        <div class="container container--narrow">
+          <div class="section-head reveal">
+            <span class="section-head__en">CONTACT</span>
+            <h2 class="section-head__title">お問い合わせ</h2>
+            <p class="section-head__lead">
+              工事のご相談・お見積り、土地活用のご相談、採用に関するご質問など、
+              以下のフォームまたはお電話で承ります。
+            </p>
+          </div>
+
+          <div class="card reveal">
+            <h3 class="card__title">お電話でのお問い合わせ</h3>
+            <p class="cta__tel cta__tel--dark">000-000-0000</p>
+            <p class="card__text">受付時間: 平日 9:00 - 18:00（土日祝・年末年始を除く）</p>
+          </div>
+
+          <form class="form mt-6 reveal" data-contact-form novalidate>
+            <p class="form-status" data-form-status data-state="info">
+              <span class="visually-hidden">フォームの状態: </span>
+              必要事項をご記入のうえ、送信してください。* は入力必須の項目です。
+            </p>
+
+            <div class="field">
+              <label class="field__label" for="type">
+                お問い合わせ種別 <span class="field__required">必須</span>
+              </label>
+              <select id="type" name="type" required>
+                <option value="">選択してください</option>
+                <option value="construction">工事のご相談・お見積り</option>
+                <option value="renovation">改修・修繕について</option>
+                <option value="estate">土地活用・不動産について</option>
+                <option value="recruit">採用について</option>
+                <option value="other">その他</option>
+              </select>
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="name">
+                お名前 <span class="field__required">必須</span>
+              </label>
+              <input type="text" id="name" name="name" autocomplete="name" required>
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="company">
+                会社名・団体名 <span class="field__optional">任意</span>
+              </label>
+              <input type="text" id="company" name="company" autocomplete="organization">
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="email">
+                メールアドレス <span class="field__required">必須</span>
+              </label>
+              <input type="email" id="email" name="email" autocomplete="email" required>
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="tel">
+                電話番号 <span class="field__optional">任意</span>
+              </label>
+              <input type="tel" id="tel" name="tel" autocomplete="tel" inputmode="tel">
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <div class="field">
+              <label class="field__label" for="message">
+                お問い合わせ内容 <span class="field__required">必須</span>
+              </label>
+              <textarea id="message" name="message" required></textarea>
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <div class="field">
+              <label class="form__consent" for="consent">
+                <input type="checkbox" id="consent" name="consent" required>
+                <span>
+                  ご入力いただいた個人情報は、お問い合わせへの回答および必要なご連絡にのみ利用します。
+                  上記に同意のうえ送信してください。
+                </span>
+              </label>
+              <p class="field__error" role="alert"></p>
+            </div>
+
+            <button class="btn btn--primary form__submit" type="submit">送信する</button>
+          </form>
+
+          <p class="note">
+            ※ このフォームは送信先が未設定です。運用時は <code>&lt;form&gt;</code> の <code>action</code> 属性に
+            メール送信スクリプトやフォームサービスのエンドポイントを指定し、送信完了ページを別途ご用意ください。
+            サーバー側での入力値の検証とスパム対策も併せて実装してください。
+          </p>
+        </div>
+      </section>
+    </main>
+    <footer class="footer">
+      <div class="container">
+        <div class="footer__top">
+          <div>
+            <div class="logo">
+              <svg class="logo__mark" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><rect width="40" height="40" rx="3" fill="#0f2a44"></rect><path d="M8 29V11h8.6c5.4 0 9.1 3.5 9.1 9s-3.7 9-9.1 9H8Zm5-4h3.3c2.9 0 4.7-1.9 4.7-5s-1.8-5-4.7-5H13v10Z" fill="#fff"></path><path d="M28 11h4v18h-4z" fill="#b8842c"></path></svg>
+              <span class="logo__text">
+                <span class="logo__name">大丸開発株式会社</span>
+                <span class="logo__en">DAIMARU KAIHATSU CO., LTD.</span>
+              </span>
+            </div>
+            <address class="footer__address">
+              〒000-0000 ○○県○○市○○町0-0-0<br>
+              TEL: 000-000-0000 / FAX: 000-000-0000<br>
+              営業時間: 平日 9:00 - 18:00
+            </address>
+          </div>
+          <nav class="footer__nav" aria-label="フッターナビゲーション">
+            <div>
+              <p class="footer__heading">COMPANY</p>
+              <ul class="footer__list">
+                <li><a href="about.html">会社概要</a></li>
+                <li><a href="about.html#message">代表挨拶</a></li>
+                <li><a href="about.html#history">沿革</a></li>
+                <li><a href="about.html#access">アクセス</a></li>
+              </ul>
+            </div>
+            <div>
+              <p class="footer__heading">BUSINESS</p>
+              <ul class="footer__list">
+                <li><a href="business.html#architecture">建築事業</a></li>
+                <li><a href="business.html#civil">土木事業</a></li>
+                <li><a href="business.html#estate">不動産開発事業</a></li>
+                <li><a href="works.html">施工実績</a></li>
+              </ul>
+            </div>
+            <div>
+              <p class="footer__heading">OTHERS</p>
+              <ul class="footer__list">
+                <li><a href="recruit.html">採用情報</a></li>
+                <li><a href="contact.html">お問い合わせ</a></li>
+              </ul>
+            </div>
+          </nav>
+        </div>
+      </div>
+      <p class="footer__bottom">
+        &copy; <span data-current-year>2026</span> 大丸開発株式会社 All Rights Reserved.
+      </p>
+    </footer>
+    <script src="assets/js/main.js"></script>
+  </body>
+</html>
