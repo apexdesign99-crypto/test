@@ -104,6 +104,7 @@ def site_from_dict(data: Dict[str, Any]) -> Site:
         lat=data.get("lat"),
         lon=data.get("lon"),
         note=data.get("note", ""),
+        provenance=list(data.get("provenance", [])),
     )
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
 
+from .geometry import bbox
 from .models import (
     Direction,
     Envelope,
@@ -240,6 +241,29 @@ def height_limits(
     return limits
 
 
+def estimated_setback_m(site: Site, max_building_area_m2: float) -> float:
+    """建蔽率いっぱいに建てた場合に確保できる、道路境界からの外壁後退距離 [m]。
+
+    斜線制限は建物の位置で決まるため、固定値ではなく敷地と建築面積から見積もる。
+    建築面積を正方形に近い形で敷地中央に置いたと仮定し、道路側に残る距離を返す。
+    実際の設計で建物をさらに後退させれば、この値より緩和は大きくなる。
+    """
+    min_x, min_y, max_x, max_y = bbox(site.polygon)
+    width, depth = max_x - min_x, max_y - min_y
+    if max_building_area_m2 <= 0 or width <= 0 or depth <= 0:
+        return DEFAULT_WALL_SETBACK_M
+
+    side = math.sqrt(max_building_area_m2)
+    road = site.widest_road
+    if road is not None and road.direction in (Direction.E, Direction.W):
+        available, building_side = width, min(width, side)
+    else:
+        available, building_side = depth, min(depth, side)
+
+    setback = max(0.0, (available - building_side) / 2)
+    return max(setback, site.zoning.wall_setback_m, DEFAULT_WALL_SETBACK_M)
+
+
 def evaluate(
     site: Site,
     floor_height_m: float = DEFAULT_FLOOR_HEIGHT_M,
@@ -273,9 +297,10 @@ def evaluate(
     max_building_area = effective_area * bcr
     max_floor_area = effective_area * far
 
-    # 想定建物奥行（正方形近似）を用いて北側斜線を評価する。
+    # 想定建物奥行（正方形近似）と、敷地に対する建物位置から斜線制限を評価する。
     depth = math.sqrt(max_building_area) if max_building_area > 0 else 8.0
-    limits = height_limits(site, building_depth_m=depth)
+    setback = estimated_setback_m(site, max_building_area)
+    limits = height_limits(site, wall_setback_m=setback, building_depth_m=depth)
     max_height = min(l.limit_m for l in limits)
 
     usable_height = max(0.0, max_height - ROOF_ALLOWANCE_M)

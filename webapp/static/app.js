@@ -103,6 +103,7 @@ function bindEvents() {
   });
 
   document.getElementById("fetch-market").addEventListener("click", fetchMarketPrice);
+  document.getElementById("resolve-btn").addEventListener("click", resolveFromAddress);
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -148,13 +149,7 @@ function polygonArea(points) {
 }
 
 function updateAreaHint() {
-  let area = 0;
-  if (isRectMode()) {
-    area = (Number(form.width_m.value) || 0) * (Number(form.depth_m.value) || 0);
-  } else {
-    const points = parsePolygon(form.polygon.value);
-    if (points.length >= 3) area = polygonArea(points);
-  }
+  const area = currentArea();
   document.getElementById("area-hint").textContent = area
     ? `敷地面積 ${fmtNum(area)} m²（${fmtNum(area / 3.305785)} 坪）`
     : "敷地面積を算出できません（3点以上の座標が必要です）";
@@ -271,7 +266,12 @@ function collectPayload() {
 function applySample(id) {
   const sample = samples.find((s) => s.id === id);
   if (!sample) return;
-  const data = sample.request;
+  applyRequest(sample.request);
+  setStatus("サンプルを読み込みました。");
+}
+
+/** /api/resolve や /api/samples が返す敷地データをフォームに流し込む。 */
+function applyRequest(data) {
   form.address.value = data.address || "";
   form.polygon.value = (data.polygon || []).map((p) => `${p[0]}, ${p[1]}`).join("\n");
   document.querySelector('.seg[data-shape="polygon"]').click();
@@ -292,8 +292,65 @@ function applySample(id) {
   form.quake_intensity_rank.value = data.hazard?.quake_intensity_rank ?? 3;
   roadsEl.innerHTML = "";
   (data.roads || []).forEach((road) => addRoad(road));
+  if (!(data.roads || []).length) addRoad();
   updateAreaHint();
-  setStatus("サンプルを読み込みました。");
+}
+
+/** 住所から公的データ（用途地域・道路・ハザード）を引いてフォームを埋める。 */
+async function resolveFromAddress() {
+  const address = form.address.value.trim();
+  if (!address) {
+    setStatus("所在地を入力してください。", true);
+    return;
+  }
+  const panel = document.getElementById("resolve-panel");
+  setStatus("公的データを照会中…");
+  try {
+    const response = await fetch("/api/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        address,
+        area_m2: currentArea() || null,
+        land_price_jpy: numberOrNull(form.land_price_jpy.value),
+        station_distance_m: numberOrNull(form.station_distance_m.value),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "取得に失敗しました");
+
+    applyRequest(data.request);
+    document.querySelector('.seg[data-shape="polygon"]').click();
+    panel.classList.remove("hidden");
+    panel.innerHTML =
+      `<h3>データ出典</h3><ul>${(data.provenance || [])
+        .map(
+          (p) =>
+            `<li><span class="src">${escapeHtml(p.field)}: ${escapeHtml(p.value)}</span> ← ${escapeHtml(
+              p.source
+            )}${p.note ? `（${escapeHtml(p.note)}）` : ""}</li>`
+        )
+        .join("")}</ul>` +
+      `<h3>要確認</h3><ul>${(data.warnings || [])
+        .map((w) => `<li class="warn">${escapeHtml(w)}</li>`)
+        .join("")}</ul>`;
+    setStatus(`${data.provenance.length} 項目を取得しました。要確認 ${data.warnings.length} 件。`);
+  } catch (error) {
+    panel.classList.remove("hidden");
+    panel.innerHTML = `<h3>取得できません</h3><ul><li class="warn">${escapeHtml(
+      error.message
+    )}</li></ul>`;
+    setStatus(error.message, true);
+  }
+}
+
+/** 現在のフォームから敷地面積 [m2] を求める。 */
+function currentArea() {
+  if (isRectMode()) {
+    return (Number(form.width_m.value) || 0) * (Number(form.depth_m.value) || 0);
+  }
+  const points = parsePolygon(form.polygon.value);
+  return points.length >= 3 ? polygonArea(points) : 0;
 }
 
 /** 所在地から市区町村名を取り出す（「東京都世田谷区代田1-1-1」→「世田谷区」）。 */

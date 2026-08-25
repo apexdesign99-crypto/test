@@ -32,9 +32,11 @@ from ai_land_design.cost import GRADE_FACTOR
 from ai_land_design.documents import to_markdown as permit_markdown
 from ai_land_design.models import Direction, FireZone, Site, Structure, UseDistrict
 from ai_land_design.sources.gis import LocalGisProvider
+from ai_land_design.sources.http import ApiError, NetworkUnavailable
 from ai_land_design.sources.realestate import LocalRealEstateProvider
+from ai_land_design.sources.resolve import build_resolver
 
-from .schemas import AnalyzeRequest
+from .schemas import AnalyzeRequest, ResolveRequest
 
 BASE_DIR = Path(__file__).resolve().parent
 SAMPLES_DIR = BASE_DIR.parent / "samples"
@@ -74,6 +76,7 @@ def _site_to_request(site: Site) -> Dict[str, Any]:
         "land_price_jpy": site.land_price_jpy,
         "station_distance_m": site.station_distance_m,
         "note": site.note,
+        "provenance": site.provenance,
     }
 
 
@@ -137,6 +140,45 @@ def listings(
         "median_unit_price_per_tsubo": provider.median_unit_price(address),
         "count": len(hits),
     }
+
+
+@app.post("/api/resolve")
+def resolve(request: ResolveRequest) -> Dict[str, Any]:
+    """住所から敷地条件（用途地域・建蔽率・容積率・道路・ハザード）を組み立てる。
+
+    データソースはサーバ側の環境変数で設定する。
+
+        AI_LAND_DESIGN_LIVE=1              国土地理院・OSM・ハザードマップを使う
+        AI_LAND_DESIGN_ZONING_GEOJSON=...  国土数値情報 A29（用途地域）の GeoJSON
+        AI_LAND_DESIGN_GEOCODE_TABLE=...   住所→緯度経度のローカル辞書
+        AI_LAND_DESIGN_GEOCODE_CACHE=...   ジオコーディング結果のキャッシュ
+        REINFOLIB_API_KEY=...              不動産情報ライブラリ API キー
+    """
+    try:
+        resolver, notes = build_resolver()
+    except ValueError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    try:
+        resolved = resolver.resolve(
+            request.address,
+            area_m2=request.area_m2,
+            road_width_m=request.road_width_m,
+            frontage_m=request.frontage_m,
+            land_price_jpy=request.land_price_jpy,
+            station_distance_m=request.station_distance_m,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except NetworkUnavailable as error:
+        raise HTTPException(status_code=502, detail=f"外部 API に到達できません: {error}") from error
+    except ApiError as error:
+        raise HTTPException(status_code=502, detail=f"外部 API がエラーを返しました: {error}") from error
+
+    payload = resolved.to_dict()
+    payload["request"] = _site_to_request(resolved.site)
+    payload["sources"] = notes
+    return payload
 
 
 @app.post("/api/analyze")

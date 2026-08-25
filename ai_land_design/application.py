@@ -263,6 +263,36 @@ def to_html(
             f"{rows}</tbody></table></section>"
         )
 
+    provenance_html = ""
+    if site.provenance:
+        rows = "".join(
+            f"<tr><th>{record.get('field', '')}</th>"
+            f"<td>{record.get('value', '')}<br><small>出典: {record.get('source', '')}"
+            f"{'／' + record.get('note', '') if record.get('note') else ''}</small></td></tr>"
+            for record in site.provenance
+        )
+        provenance_html = (
+            '<section class="sheet"><h2>データ出典（自動取得した項目）</h2>'
+            f"<table>{rows}</table>"
+            "<p style=\"font-size:10px\">上記以外の項目は入力値または既定値です。"
+            "確認申請にあたっては、都市計画情報・道路台帳・測量図で確認してください。</p></section>"
+        )
+
+    provenance_html = ""
+    if site.provenance:
+        rows = "".join(
+            f"<tr><th>{record.get('field', '')}</th>"
+            f"<td>{record.get('value', '')}<br><small>出典: {record.get('source', '')}"
+            f"{'／' + record.get('note', '') if record.get('note') else ''}</small></td></tr>"
+            for record in site.provenance
+        )
+        provenance_html = (
+            '<section class="sheet"><h2>データ出典（自動取得した項目）</h2>'
+            f"<table>{rows}</table>"
+            '<p style="font-size:10px">上記以外の項目は入力値または既定値です。'
+            "確認申請にあたっては、都市計画情報・道路台帳・測量図で確認してください。</p></section>"
+        )
+
     drawing_html = ""
     if drawings:
         titles = {
@@ -308,6 +338,7 @@ def to_html(
 <p>{site.address or site.site_id}　／　{info.main_use}　{building.structure.value}
 {building.storeys}階建　延べ面積 {building.total_floor_area_m2:.2f} m²</p>
 {sections}
+{provenance_html}
 {compliance_html}
 {drawing_html}
 <p class="note">本書は建築基準法施行規則 別記第二号様式に転記するためのデータシートであり、

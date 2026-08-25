@@ -148,6 +148,17 @@ class OptionsIn(BaseModel):
         )
 
 
+class ResolveRequest(BaseModel):
+    """住所から敷地条件を自動取得するリクエスト。"""
+
+    address: str = Field(min_length=1, max_length=200, description="所在地")
+    area_m2: Optional[float] = Field(default=None, gt=0, le=100000, description="敷地面積")
+    road_width_m: Optional[float] = Field(default=None, gt=0, le=50)
+    frontage_m: Optional[float] = Field(default=None, gt=0, le=200)
+    land_price_jpy: Optional[int] = Field(default=None, ge=0)
+    station_distance_m: Optional[int] = Field(default=None, ge=0, le=20000)
+
+
 class AnalyzeRequest(BaseModel):
     """診断リクエスト。
 
@@ -166,6 +177,8 @@ class AnalyzeRequest(BaseModel):
     land_price_jpy: Optional[int] = Field(default=None, ge=0)
     station_distance_m: Optional[int] = Field(default=None, ge=0, le=20000)
     note: str = ""
+    #: 自動取得した項目の出典（/api/resolve の結果をそのまま送り返すと報告書に載る）
+    provenance: List[Dict[str, str]] = Field(default_factory=list)
     options: OptionsIn = Field(default_factory=OptionsIn)
     application: ApplicationIn = Field(default_factory=ApplicationIn)
 
@@ -199,6 +212,7 @@ class AnalyzeRequest(BaseModel):
             "land_price_jpy": self.land_price_jpy,
             "station_distance_m": self.station_distance_m,
             "note": self.note,
+            "provenance": self.provenance,
         }
 
     def to_site(self):

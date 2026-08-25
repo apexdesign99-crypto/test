@@ -197,3 +197,11 @@ td.small { font-size: 11px; color: var(--ink-soft); }
 .export-btn.strong { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .export-btn.strong:hover { background: #275c42; color: #fff; }
 .export-btn.strong:disabled { background: #9bb3a6; border-color: #9bb3a6; }
+
+/* 住所からの自動取得パネル */
+.resolve-panel { border: 1px solid var(--line); border-radius: 8px; padding: 10px; margin-bottom: 10px; background: #fbfaf7; }
+.resolve-panel h3 { margin: 0 0 6px; font-size: 11px; color: var(--accent); letter-spacing: .06em; }
+.resolve-panel ul { margin: 0 0 8px; padding-left: 16px; font-size: 11px; color: var(--ink-soft); }
+.resolve-panel li { margin-bottom: 2px; }
+.resolve-panel .src { color: var(--ink); }
+.resolve-panel .warn { color: var(--warn); }

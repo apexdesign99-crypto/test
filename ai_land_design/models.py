@@ -155,6 +155,8 @@ class Site:
     lat: Optional[float] = None
     lon: Optional[float] = None
     note: str = ""
+    #: 各項目をどのデータソースから取得したかの記録（自動取得した場合に入る）
+    provenance: List[Dict[str, str]] = field(default_factory=list)
 
     @property
     def area_m2(self) -> float:
@@ -196,6 +198,7 @@ class Site:
             "lat": self.lat,
             "lon": self.lon,
             "note": self.note,
+            "provenance": self.provenance,
         }
 
 

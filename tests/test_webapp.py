@@ -6,8 +6,11 @@ FastAPI が未インストールの環境ではスキップする（算定エン
 import importlib.util
 import io
 import json
+import os
 import unittest
 import zipfile
+from pathlib import Path
+from unittest import mock
 
 HAS_FASTAPI = importlib.util.find_spec("fastapi") is not None and importlib.util.find_spec("httpx")
 
@@ -39,6 +42,70 @@ BLOCKED_REQUEST = {
     **BASE_REQUEST,
     "roads": [{"width_m": 4.0, "direction": "西", "frontage_m": 1.8}],
 }
+
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+#: /api/resolve のデータソース設定（オフラインのフィクスチャを使う）
+RESOLVE_ENV = {
+    "AI_LAND_DESIGN_GEOCODE_TABLE": str(FIXTURES / "geocode.json"),
+    "AI_LAND_DESIGN_ZONING_GEOJSON": str(FIXTURES / "zoning_a29.json"),
+    "AI_LAND_DESIGN_LIVE": "",
+}
+
+
+@unittest.skipUnless(HAS_FASTAPI, "fastapi / httpx が未インストール")
+class ResolveApiTest(unittest.TestCase):
+    """住所から敷地条件を組み立てるエンドポイント。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+
+    def test_resolve_fills_the_form(self):
+        with mock.patch.dict(os.environ, RESOLVE_ENV):
+            response = self.client.post(
+                "/api/resolve",
+                json={"address": "東京都世田谷区代田1-1-1", "area_m2": 180, "land_price_jpy": 95000000},
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["request"]["zoning"]["use_district"], "第一種住居地域")
+        self.assertAlmostEqual(data["request"]["zoning"]["building_coverage_ratio"], 0.6)
+        self.assertEqual(len(data["request"]["polygon"]), 4)
+        self.assertTrue(data["provenance"])
+        self.assertTrue(data["warnings"])
+
+    def test_resolved_request_can_be_analyzed(self):
+        with mock.patch.dict(os.environ, RESOLVE_ENV):
+            resolved = self.client.post(
+                "/api/resolve", json={"address": "東京都世田谷区代田1-1-1", "area_m2": 180}
+            ).json()
+        analysis = self.client.post("/api/analyze", json=resolved["request"])
+        self.assertEqual(analysis.status_code, 200)
+        data = analysis.json()
+        self.assertTrue(data["envelope"]["buildable"])
+        self.assertTrue(data["code_check"]["ready"])
+        self.assertTrue(data["site"]["provenance"])
+
+    def test_unknown_address_returns_404(self):
+        with mock.patch.dict(os.environ, RESOLVE_ENV):
+            response = self.client.post("/api/resolve", json={"address": "存在しない住所"})
+        self.assertEqual(response.status_code, 404)
+
+    def test_without_configuration_returns_503(self):
+        empty = {
+            "AI_LAND_DESIGN_GEOCODE_TABLE": "",
+            "AI_LAND_DESIGN_ZONING_GEOJSON": "",
+            "AI_LAND_DESIGN_LIVE": "",
+        }
+        with mock.patch.dict(os.environ, empty):
+            response = self.client.post("/api/resolve", json={"address": "東京都世田谷区代田1-1-1"})
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("AI_LAND_DESIGN_LIVE", response.json()["detail"])
+
+    def test_address_is_required(self):
+        self.assertEqual(self.client.post("/api/resolve", json={"address": ""}).status_code, 422)
 
 
 @unittest.skipUnless(HAS_FASTAPI, "fastapi / httpx が未インストール")

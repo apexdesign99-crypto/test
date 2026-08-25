@@ -28,9 +28,10 @@
         <select id="sample-select"><option value="">（選択してください）</option></select>
       </label>
       <label class="field">
-        <span>所在地</span>
+        <span>所在地 <button type="button" class="ghost" id="resolve-btn">住所から取得</button></span>
         <input type="text" name="address" placeholder="東京都世田谷区代田1-1-1">
       </label>
+      <div id="resolve-panel" class="resolve-panel hidden"></div>
       <div class="field">
         <span>敷地形状</span>
         <div class="segmented" role="tablist">

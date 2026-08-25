@@ -200,6 +200,14 @@ def to_markdown(result: ProjectResult) -> str:
     for item in result.diagnosis.items:
         lines.append(f"| {item.name} | {item.score:.1f} | {item.weight:.2f} | {item.comment} |")
 
+    if site.provenance:
+        lines += ["", "### データ出典", "", "| 項目 | 値 | 出典 |", "| --- | --- | --- |"]
+        for record in site.provenance:
+            lines.append(
+                f"| {record.get('field', '')} | {record.get('value', '')} | "
+                f"{record.get('source', '')} |"
+            )
+
     if result.diagnosis.findings:
         lines += ["", "指摘事項:", ""]
         for finding in result.diagnosis.findings:
