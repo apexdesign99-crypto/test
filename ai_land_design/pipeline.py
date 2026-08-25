@@ -24,13 +24,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import application as application_module
+from . import compliance as compliance_module
 from . import cost as cost_module
 from . import diagnosis as diagnosis_module
 from . import documents as documents_module
+from . import drawings as drawings_module
 from . import exterior as exterior_module
 from . import feasibility as feasibility_module
 from . import layout as layout_module
+from .application import ApplicationInfo
 from .bim import to_ifc
+from .compliance import ComplianceReport
 from .models import (
     Building,
     CostBreakdown,
@@ -54,6 +59,8 @@ class Options:
     market_unit_price_per_tsubo: Optional[int] = None
     land_price_jpy: Optional[int] = None
     project_name: str = "AI LAND DESIGN"
+    ceiling_height_m: float = 2.4
+    application: ApplicationInfo = field(default_factory=ApplicationInfo)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -65,6 +72,8 @@ class Options:
             "market_unit_price_per_tsubo": self.market_unit_price_per_tsubo,
             "land_price_jpy": self.land_price_jpy,
             "project_name": self.project_name,
+            "ceiling_height_m": self.ceiling_height_m,
+            "application": self.application.to_dict(),
         }
 
 
@@ -79,6 +88,7 @@ class ProjectResult:
     building: Optional[Building]
     cost: Optional[CostBreakdown]
     compliance: List[Finding] = field(default_factory=list)
+    code_check: Optional[ComplianceReport] = None
 
     @property
     def blocked(self) -> bool:
@@ -93,6 +103,7 @@ class ProjectResult:
             "building": self.building.to_dict() if self.building else None,
             "cost": self.cost.to_dict() if self.cost else None,
             "compliance": [f.to_dict() for f in self.compliance],
+            "code_check": self.code_check.to_dict() if self.code_check else None,
         }
         if self.building and self.cost:
             data["summary"] = {
@@ -139,6 +150,7 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         structure=options.structure,
         floor_height_m=options.floor_height_m,
         target_floor_area_m2=options.target_floor_area_m2,
+        ceiling_height_m=options.ceiling_height_m,
     )
 
     # 屋根形状：切妻の棟が高さ制限を超える場合は陸屋根に切り替える。
@@ -153,6 +165,7 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         land_price_jpy=options.land_price_jpy,
     )
     compliance = documents_module.compliance_check(envelope, building)
+    code_check = compliance_module.evaluate(site, envelope, building)
 
     return ProjectResult(
         site=site,
@@ -162,6 +175,7 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         building=building,
         cost=breakdown,
         compliance=compliance,
+        code_check=code_check,
     )
 
 
@@ -288,53 +302,50 @@ def to_markdown(result: ProjectResult) -> str:
     return "\n".join(lines)
 
 
+def application_package(result: ProjectResult) -> Dict[str, str]:
+    """確認申請用の成果物一式（ファイル名 → 内容）。
+
+    図面（配置図・平面図・立面図4面・断面図・求積図）、IFC、申請書の記載事項、
+    法適合チェック、事業性レポートをまとめて返す。ZIP 化や書き出しは呼び出し側で行う。
+    """
+    files: Dict[str, str] = {"report.md": to_markdown(result)}
+    files["report.json"] = json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+    if not (result.building and result.building.floors):
+        return files
+
+    site, envelope, building = result.site, result.envelope, result.building
+    drawings = drawings_module.all_drawings(site, building, envelope)
+    for name, svg in drawings.items():
+        files[f"図面/{name}"] = svg
+
+    files["model.ifc"] = to_ifc(
+        site, building, project_name=result.options.project_name, envelope=envelope
+    )
+    files["massing.obj"] = exterior_module.build_massing(building).to_obj(site.site_id)
+    files["exterior.svg"] = exterior_module.to_svg(building)
+
+    info = result.options.application
+    files["申請書_記載事項.md"] = application_module.to_markdown(site, envelope, building, info)
+    files["申請書_記載事項.html"] = application_module.to_html(
+        site, envelope, building, info, result.code_check, drawings
+    )
+    if result.code_check:
+        files["法適合チェック.md"] = compliance_module.to_markdown(result.code_check)
+        files["法適合チェック.json"] = json.dumps(
+            result.code_check.to_dict(), ensure_ascii=False, indent=2
+        )
+    files["確認申請_図書チェックリスト.md"] = documents_module.to_markdown(site, envelope, building)
+    return files
+
+
 def write_outputs(result: ProjectResult, out_dir: str | Path) -> List[Path]:
-    """レポート・図面・3D・IFC を書き出す。"""
+    """申請パッケージ（図面・IFC・申請書・チェック・レポート）を書き出す。"""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
-
-    report_json = out / "report.json"
-    report_json.write_text(
-        json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    written.append(report_json)
-
-    report_md = out / "report.md"
-    report_md.write_text(to_markdown(result), encoding="utf-8")
-    written.append(report_md)
-
-    if result.building and result.building.floors:
-        for floor in result.building.floors:
-            svg = out / f"plan_{floor.storey}f.svg"
-            svg.write_text(
-                layout_module.to_svg(result.site, result.building, floor.storey), encoding="utf-8"
-            )
-            written.append(svg)
-
-        exterior_svg = out / "exterior.svg"
-        exterior_svg.write_text(exterior_module.to_svg(result.building), encoding="utf-8")
-        written.append(exterior_svg)
-
-        obj = out / "massing.obj"
-        obj.write_text(
-            exterior_module.build_massing(result.building).to_obj(result.site.site_id),
-            encoding="utf-8",
-        )
-        written.append(obj)
-
-        ifc = out / "model.ifc"
-        ifc.write_text(
-            to_ifc(result.site, result.building, project_name=result.options.project_name),
-            encoding="utf-8",
-        )
-        written.append(ifc)
-
-        permit = out / "permit.md"
-        permit.write_text(
-            documents_module.to_markdown(result.site, result.envelope, result.building),
-            encoding="utf-8",
-        )
-        written.append(permit)
-
+    for name, content in application_package(result).items():
+        path = out / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        written.append(path)
     return written

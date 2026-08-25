@@ -73,11 +73,20 @@ class PipelineTest(unittest.TestCase):
         result = pipeline.run(make_site())
         with tempfile.TemporaryDirectory() as tmp:
             written = pipeline.write_outputs(result, tmp)
-            names = {p.name for p in written}
-            self.assertTrue(
-                {"report.json", "report.md", "plan_1f.svg", "massing.obj", "model.ifc", "permit.md"}
-                <= names
-            )
+            names = {str(p.relative_to(tmp)) for p in written}
+            expected = {
+                "report.json",
+                "report.md",
+                "model.ifc",
+                "massing.obj",
+                "図面/site_plan.svg",
+                "図面/plan_1f.svg",
+                "図面/section.svg",
+                "図面/area_calculation.svg",
+                "申請書_記載事項.html",
+                "法適合チェック.md",
+            }
+            self.assertTrue(expected <= names, f"不足: {expected - names}")
             for path in written:
                 self.assertGreater(path.stat().st_size, 0)
 

@@ -4,8 +4,10 @@ FastAPI が未インストールの環境ではスキップする（算定エン
 """
 
 import importlib.util
+import io
 import json
 import unittest
+import zipfile
 
 HAS_FASTAPI = importlib.util.find_spec("fastapi") is not None and importlib.util.find_spec("httpx")
 
@@ -26,6 +28,11 @@ BASE_REQUEST = {
         "floor_area_ratio": 2.0,
     },
     "roads": [{"width_m": 6.0, "direction": "南", "frontage_m": 14.0}],
+    "application": {
+        "owner": {"name": "山田 太郎", "address": "東京都世田谷区代田1-1-1"},
+        "designer": {"name": "設計 花子", "qualification": "一級建築士"},
+        "start_date": "2026-10-01",
+    },
 }
 
 BLOCKED_REQUEST = {
@@ -120,6 +127,29 @@ class ApiTest(unittest.TestCase):
         payload["zoning"]["building_coverage_ratio"] = 1.5
         self.assertEqual(self.client.post("/api/analyze", json=payload).status_code, 422)
 
+    def test_analyze_returns_application_drawings(self):
+        data = self.client.post("/api/analyze", json=BASE_REQUEST).json()
+        drawings = data["drawings"]
+        self.assertTrue(drawings["site_plan"].startswith("<svg"))
+        self.assertTrue(drawings["section"].startswith("<svg"))
+        self.assertTrue(drawings["area_calculation"].startswith("<svg"))
+        self.assertEqual(
+            [e["facade"] for e in drawings["elevations"]], ["南", "東", "北", "西"]
+        )
+
+    def test_analyze_returns_code_check(self):
+        data = self.client.post("/api/analyze", json=BASE_REQUEST).json()
+        check = data["code_check"]
+        self.assertTrue(check["ready"])
+        self.assertEqual(check["summary"]["不適合"], 0)
+        self.assertTrue(any(i["name"] == "建蔽率" for i in check["items"]))
+        self.assertIn("法適合チェック", data["compliance_markdown"])
+
+    def test_application_info_flows_into_the_sheets(self):
+        data = self.client.post("/api/analyze", json=BASE_REQUEST).json()
+        self.assertIn("山田 太郎", data["application_markdown"])
+        self.assertIn("一級建築士", data["application_markdown"])
+
     def test_export_formats(self):
         expected = {
             "ifc": "ISO-10303-21;",
@@ -128,6 +158,13 @@ class ApiTest(unittest.TestCase):
             "permit-md": "# 確認申請",
             "plan-svg": "<svg",
             "exterior-svg": "<svg",
+            "site-plan-svg": "<svg",
+            "section-svg": "<svg",
+            "area-svg": "<svg",
+            "elevation-svg": "<svg",
+            "application-html": "<!doctype html>",
+            "application-md": "# 確認申請 記載事項シート",
+            "compliance-md": "# 法適合チェック",
         }
         for fmt, head in expected.items():
             response = self.client.post(f"/api/export/{fmt}", json=BASE_REQUEST)
@@ -157,6 +194,58 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(
             self.client.post("/api/export/report-md", json=BLOCKED_REQUEST).status_code, 200
         )
+
+    def test_export_elevation_by_facade(self):
+        for facade in ("南", "東", "北", "西"):
+            response = self.client.post(
+                "/api/export/elevation-svg", params={"facade": facade}, json=BASE_REQUEST
+            )
+            self.assertEqual(response.status_code, 200, facade)
+            self.assertIn(f"{facade}立面図", response.text)
+
+    def test_export_rejects_unknown_facade(self):
+        response = self.client.post(
+            "/api/export/elevation-svg", params={"facade": "北東"}, json=BASE_REQUEST
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_japanese_filenames_use_rfc5987(self):
+        """日本語ファイル名は latin-1 のヘッダに入らないため filename* で返す。"""
+        response = self.client.post(
+            "/api/export/elevation-svg", params={"facade": "東"}, json=BASE_REQUEST
+        )
+        disposition = response.headers["content-disposition"]
+        self.assertIn("filename*=UTF-8''", disposition)
+        self.assertIn("elevation_east.svg", disposition)  # ASCII 代替
+        disposition.encode("latin-1")  # ヘッダとして送出できること
+
+    def test_package_zip_contains_the_full_set(self):
+        response = self.client.post("/api/package", json=BASE_REQUEST)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/zip")
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        names = {n.split("/", 1)[1] for n in archive.namelist()}
+        expected = {
+            "report.md",
+            "model.ifc",
+            "図面/site_plan.svg",
+            "図面/plan_1f.svg",
+            "図面/elevation_南.svg",
+            "図面/section.svg",
+            "図面/area_calculation.svg",
+            "申請書_記載事項.html",
+            "法適合チェック.md",
+        }
+        self.assertTrue(expected <= names, f"不足: {expected - names}")
+        for info in archive.infolist():
+            self.assertGreater(info.file_size, 0)
+
+    def test_package_for_blocked_site_has_report_only(self):
+        response = self.client.post("/api/package", json=BLOCKED_REQUEST)
+        self.assertEqual(response.status_code, 200)
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        names = {n.split("/", 1)[1] for n in archive.namelist()}
+        self.assertEqual(names, {"report.md", "report.json"})
 
     def test_index_and_static_assets(self):
         index = self.client.get("/")

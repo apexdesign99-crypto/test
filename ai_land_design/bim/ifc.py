@@ -6,11 +6,12 @@ IFC4 の必要最小限のエンティティを直接書き出す。
 出力する構成:
     IfcProject
       └ IfcSite
-          └ IfcBuilding
+          └ IfcBuilding                Pset_BuildingCommon / 確認申請用 Pset
               └ IfcBuildingStorey (各階)
                   ├ IfcSlab            床スラブ
-                  ├ IfcWallStandardCase 外壁（各階4面）
-                  └ IfcSpace           各室（間取り）
+                  ├ IfcWallStandardCase 外壁（各階4面）Pset_WallCommon
+                  │   └ IfcOpeningElement ─ IfcWindow / IfcDoor
+                  └ IfcSpace           各室（間取り）Pset_SpaceCommon + 面積数量
 
 GlobalId は要素キーからの UUID5 で決定的に生成するため、同じ入力からは
 同じ IFC が得られる（差分確認・テストが可能）。
@@ -21,10 +22,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from ..geometry import Point, Polygon, bbox
-from ..models import Building, Site
+from ..geometry import Point, Polygon, bbox, rectangle
+from ..models import Building, Direction, Envelope, Opening, Site
 
 _GUID_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$"
 _NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
@@ -138,6 +139,66 @@ def _wall_polygons(footprint: Sequence[Point], thickness: float) -> List[Tuple[s
     ]
 
 
+#: 方位 → 壁の名称
+_FACADE_NAME = {Direction.S: "南面", Direction.N: "北面", Direction.W: "西面", Direction.E: "東面"}
+
+
+def _opening_polygon(opening: Opening, footprint: Polygon, thickness: float) -> Polygon:
+    """開口部の平面形（壁を貫通する矩形）。"""
+    x0, y0, x1, y1 = bbox(footprint)
+    margin = 0.02
+    if opening.facade is Direction.S:
+        return rectangle(opening.position, y0 - margin, opening.width, thickness + margin * 2)
+    if opening.facade is Direction.N:
+        return rectangle(
+            opening.position, y1 - thickness - margin, opening.width, thickness + margin * 2
+        )
+    if opening.facade is Direction.W:
+        return rectangle(x0 - margin, opening.position, thickness + margin * 2, opening.width)
+    return rectangle(x1 - thickness - margin, opening.position, thickness + margin * 2, opening.width)
+
+
+def _property(step: _StepFile, name: str, value: str) -> str:
+    """IfcPropertySingleValue。
+
+    `value` は IfcValue の型付き表記（`IFCLABEL('...')` / `IFCAREAMEASURE(12.3)` など）
+    でなければならない。素の文字列は IFC の SELECT 型として不正になる。
+    """
+    return step.add(f"IFCPROPERTYSINGLEVALUE({ifc_string(name)},$,{value},$)")
+
+
+def _property_set(
+    step: _StepFile, owner: str, key: str, name: str, properties: Sequence[str], targets: Sequence[str]
+) -> None:
+    """IfcPropertySet を作り、対象オブジェクトに関連付ける。"""
+    if not properties or not targets:
+        return
+    pset = step.add(
+        f"IFCPROPERTYSET('{guid_for(key)}',{owner},{ifc_string(name)},$,{_list(properties)})"
+    )
+    step.add(
+        f"IFCRELDEFINESBYPROPERTIES('{guid_for(key + ':rel')}',{owner},$,$,"
+        f"{_list(targets)},{pset})"
+    )
+
+
+def _quantity_area(
+    step: _StepFile, owner: str, key: str, name: str, value: float, target: str
+) -> None:
+    """IfcElementQuantity（面積）。"""
+    quantity = step.add(
+        f"IFCQUANTITYAREA({ifc_string(name)},$,$,{num(value)},$)"
+    )
+    element_quantity = step.add(
+        f"IFCELEMENTQUANTITY('{guid_for(key)}',{owner},{ifc_string('Qto_SpaceBaseQuantities')},$,"
+        f"{ifc_string('求積')},({quantity}))"
+    )
+    step.add(
+        f"IFCRELDEFINESBYPROPERTIES('{guid_for(key + ':rel')}',{owner},$,$,"
+        f"({target}),{element_quantity})"
+    )
+
+
 def to_ifc(
     site: Site,
     building: Building,
@@ -145,6 +206,7 @@ def to_ifc(
     author: str = "AI LAND DESIGN",
     organization: str = "AI LAND DESIGN",
     timestamp: Optional[datetime] = None,
+    envelope: Optional[Envelope] = None,
 ) -> str:
     """建物案を IFC4 の STEP 文字列に変換する。"""
     step = _StepFile()
@@ -222,18 +284,90 @@ def to_ifc(
         )
 
         wall_height = max(0.1, floor.height_m - SLAB_THICKNESS_M)
+        wall_refs: Dict[str, str] = {}
         for name, polygon in _wall_polygons(floor.footprint, WALL_THICKNESS_M):
             wall_profile = _profile(step, polygon, f"{floor.storey}階 外壁{name}")
             wall_solid = _extruded_solid(step, wall_profile, SLAB_THICKNESS_M, wall_height)
             wall_shape = _shape(step, context, wall_solid)
             wall_placement = _placement(step, storey_placement)
-            elements.append(
-                step.add(
-                    f"IFCWALLSTANDARDCASE('{guid_for(key + ':wall:' + name)}',{owner},"
-                    f"{ifc_string(f'{floor.storey}階 外壁 {name}')},$,$,{wall_placement},"
-                    f"{wall_shape},$,.STANDARD.)"
-                )
+            wall_ref = step.add(
+                f"IFCWALLSTANDARDCASE('{guid_for(key + ':wall:' + name)}',{owner},"
+                f"{ifc_string(f'{floor.storey}階 外壁 {name}')},$,$,{wall_placement},"
+                f"{wall_shape},$,.STANDARD.)"
             )
+            wall_refs[name] = wall_ref
+            elements.append(wall_ref)
+
+        # 外壁の共通プロパティ
+        _property_set(
+            step,
+            owner,
+            key + ":pset:wall",
+            "Pset_WallCommon",
+            [
+                _property(step, "IsExternal", "IFCBOOLEAN(.T.)"),
+                _property(step, "LoadBearing", "IFCBOOLEAN(.T.)"),
+                _property(step, "ThermalTransmittance", f"IFCREAL({num(0.6)})"),
+            ],
+            list(wall_refs.values()),
+        )
+
+        # 開口部（IfcOpeningElement）と建具（IfcWindow / IfcDoor）
+        for index, opening in enumerate(floor.openings):
+            wall_ref = wall_refs.get(_FACADE_NAME[opening.facade])
+            if wall_ref is None:
+                continue
+            opening_key = f"{key}:opening{index}"
+            polygon = _opening_polygon(opening, floor.footprint, WALL_THICKNESS_M)
+            base_z = SLAB_THICKNESS_M + opening.sill_m
+            profile = _profile(step, polygon, f"{opening.room} {opening.kind}")
+            solid = _extruded_solid(step, profile, base_z, opening.height)
+            shape = _shape(step, context, solid)
+            placement = _placement(step, storey_placement)
+            opening_ref = step.add(
+                f"IFCOPENINGELEMENT('{guid_for(opening_key)}',{owner},"
+                f"{ifc_string(f'{opening.room} {opening.kind}')},$,$,{placement},{shape},$,.OPENING.)"
+            )
+            step.add(
+                f"IFCRELVOIDSELEMENT('{guid_for(opening_key + ':voids')}',{owner},$,$,"
+                f"{wall_ref},{opening_ref})"
+            )
+
+            fill_placement = _placement(step, storey_placement)
+            fill_profile = _profile(step, polygon, f"{opening.room} {opening.kind} 建具")
+            fill_solid = _extruded_solid(step, fill_profile, base_z, opening.height)
+            fill_shape = _shape(step, context, fill_solid)
+            if opening.kind == "玄関ドア":
+                fill_ref = step.add(
+                    f"IFCDOOR('{guid_for(opening_key + ':door')}',{owner},"
+                    f"{ifc_string(f'{opening.room} 玄関ドア')},$,$,{fill_placement},{fill_shape},$,"
+                    f"{num(opening.height)},{num(opening.width)},.DOOR.,.SINGLE_SWING_LEFT.,$)"
+                )
+                pset_name = "Pset_DoorCommon"
+            else:
+                fill_ref = step.add(
+                    f"IFCWINDOW('{guid_for(opening_key + ':window')}',{owner},"
+                    f"{ifc_string(f'{opening.room} {opening.kind}')},$,$,{fill_placement},"
+                    f"{fill_shape},$,{num(opening.height)},{num(opening.width)},.WINDOW.,"
+                    f".SINGLE_PANEL.,$)"
+                )
+                pset_name = "Pset_WindowCommon"
+            step.add(
+                f"IFCRELFILLSELEMENT('{guid_for(opening_key + ':fills')}',{owner},$,$,"
+                f"{opening_ref},{fill_ref})"
+            )
+            _property_set(
+                step,
+                owner,
+                opening_key + ":pset",
+                pset_name,
+                [
+                    _property(step, "IsExternal", "IFCBOOLEAN(.T.)"),
+                    _property(step, "Reference", f"IFCLABEL({ifc_string(opening.kind)})"),
+                ],
+                [fill_ref],
+            )
+            elements.append(fill_ref)
 
         space_refs: List[str] = []
         for index, room in enumerate(floor.rooms):
@@ -247,12 +381,26 @@ def to_ifc(
             space_solid = _extruded_solid(step, space_profile, SLAB_THICKNESS_M, wall_height)
             space_shape = _shape(step, context, space_solid)
             space_placement = _placement(step, storey_placement)
-            space_refs.append(
-                step.add(
-                    f"IFCSPACE('{guid_for(f'{key}:space{index}')}',{owner},{ifc_string(room.name)},"
-                    f"{ifc_string(f'{room.area_m2:.2f} m2')},$,{space_placement},{space_shape},$,"
-                    f".ELEMENT.,.INTERNAL.,{num(elevation)})"
-                )
+            space_ref = step.add(
+                f"IFCSPACE('{guid_for(f'{key}:space{index}')}',{owner},{ifc_string(room.name)},"
+                f"{ifc_string(f'{room.area_m2:.2f} m2')},$,{space_placement},{space_shape},$,"
+                f".ELEMENT.,.INTERNAL.,{num(elevation)})"
+            )
+            space_refs.append(space_ref)
+            _property_set(
+                step,
+                owner,
+                f"{key}:space{index}:pset",
+                "Pset_SpaceCommon",
+                [
+                    _property(step, "IsExternal", "IFCBOOLEAN(.F.)"),
+                    _property(step, "GrossPlannedArea", f"IFCAREAMEASURE({num(room.area_m2)})"),
+                    _property(step, "居室", f"IFCBOOLEAN(.{'T' if room.is_habitable else 'F'}.)"),
+                ],
+                [space_ref],
+            )
+            _quantity_area(
+                step, owner, f"{key}:space{index}:qto", "NetFloorArea", room.area_m2, space_ref
             )
 
         if elements:
@@ -272,6 +420,60 @@ def to_ifc(
             f"IFCRELAGGREGATES('{guid_for('agg:building:' + site.site_id)}',{owner},$,$,"
             f"{building_ref},{_list(storey_refs)})"
         )
+
+    _property_set(
+        step,
+        owner,
+        "pset:building:" + site.site_id,
+        "Pset_BuildingCommon",
+        [
+            _property(step, "NumberOfStoreys", f"IFCINTEGER({building.storeys})"),
+            _property(
+                step, "GrossPlannedArea", f"IFCAREAMEASURE({num(building.total_floor_area_m2)})"
+            ),
+            _property(step, "OccupancyType", f"IFCLABEL({ifc_string('一戸建ての住宅')})"),
+            _property(step, "ConstructionMethod", f"IFCLABEL({ifc_string(building.structure.value)})"),
+        ],
+        [building_ref],
+    )
+
+    # 確認申請で参照する数値をカスタム Pset として持たせる
+    application_properties = [
+        _property(step, "用途地域", f"IFCLABEL({ifc_string(site.zoning.use_district.value)})"),
+        _property(step, "防火地域", f"IFCLABEL({ifc_string(site.zoning.fire_zone.value)})"),
+        _property(step, "敷地面積", f"IFCAREAMEASURE({num(site.area_m2)})"),
+        _property(step, "建築面積", f"IFCAREAMEASURE({num(building.footprint_area_m2)})"),
+        _property(step, "延べ面積", f"IFCAREAMEASURE({num(building.total_floor_area_m2)})"),
+        _property(step, "最高の高さ", f"IFCLENGTHMEASURE({num(building.height_m)})"),
+    ]
+    if envelope is not None and envelope.effective_site_area_m2 > 0:
+        application_properties += [
+            _property(
+                step,
+                "建蔽率",
+                f"IFCRATIOMEASURE({num(building.footprint_area_m2 / envelope.effective_site_area_m2)})",
+            ),
+            _property(
+                step,
+                "建蔽率の限度",
+                f"IFCRATIOMEASURE({num(envelope.applied_coverage_ratio)})",
+            ),
+            _property(
+                step,
+                "容積率",
+                f"IFCRATIOMEASURE({num(building.total_floor_area_m2 / envelope.effective_site_area_m2)})",
+            ),
+            _property(step, "容積率の限度", f"IFCRATIOMEASURE({num(envelope.applied_far)})"),
+            _property(step, "高さの限度", f"IFCLENGTHMEASURE({num(envelope.max_height_m)})"),
+        ]
+    _property_set(
+        step,
+        owner,
+        "pset:application:" + site.site_id,
+        "Pset_JP_ConfirmationApplication",
+        application_properties,
+        [building_ref],
+    )
 
     stamp = now.strftime("%Y-%m-%dT%H:%M:%S")
     header = "\n".join(

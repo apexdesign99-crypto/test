@@ -64,13 +64,80 @@ class LayoutTest(unittest.TestCase):
         self.assertLessEqual(rooms["浴室"].area_m2, 5.0 + 1e-6)
         self.assertLessEqual(rooms["トイレ"].area_m2, 2.5 + 1e-6)
 
+    def test_all_dimensions_are_on_the_910_grid(self):
+        """室の寸法と、建物原点からの位置がすべて 910mm の倍数であること。"""
+        from ai_land_design.geometry import bbox
+
+        for floor in self.building.floors:
+            ox, oy, _, _ = bbox(floor.footprint)
+            for room in floor.rooms:
+                for value in (room.x - ox, room.y - oy, room.w, room.h):
+                    steps = value / layout.GRID_M
+                    self.assertAlmostEqual(
+                        steps, round(steps), places=6, msg=f"{room.name}: {value}"
+                    )
+
+    def test_stairs_align_across_floors(self):
+        stairs = [f.room("階段") for f in self.building.floors]
+        self.assertTrue(all(s is not None for s in stairs))
+        first = stairs[0]
+        for other in stairs[1:]:
+            self.assertAlmostEqual(other.x, first.x, places=6)
+            self.assertAlmostEqual(other.y, first.y, places=6)
+            self.assertAlmostEqual(other.w, first.w, places=6)
+            self.assertAlmostEqual(other.h, first.h, places=6)
+
+    def test_every_habitable_room_touches_an_exterior_wall(self):
+        for floor in self.building.floors:
+            for room in floor.rooms:
+                if room.is_habitable:
+                    self.assertTrue(
+                        layout._facades_of(room, floor.footprint),
+                        f"{floor.storey}階 {room.name} が外壁に接していない",
+                    )
+
+    def test_openings_are_generated(self):
+        first = self.building.floors[0]
+        self.assertTrue(first.openings)
+        self.assertTrue(any(o.kind == "玄関ドア" for o in first.openings))
+        for opening in first.openings:
+            self.assertGreater(opening.width, 0)
+            self.assertGreater(opening.height, 0)
+
+    def test_entrance_door_faces_the_road(self):
+        door = next(o for o in self.building.floors[0].openings if o.kind == "玄関ドア")
+        self.assertEqual(door.facade, self.site.widest_road.direction)
+
+    def test_habitable_rooms_have_windows(self):
+        for floor in self.building.floors:
+            for room in floor.rooms:
+                if not room.is_habitable:
+                    continue
+                windows = [o for o in floor.openings if o.room == room.name]
+                self.assertTrue(windows, f"{floor.storey}階 {room.name} に窓がない")
+
+    def test_openings_stay_within_the_facade(self):
+        from ai_land_design.geometry import bbox
+
+        for floor in self.building.floors:
+            x0, y0, x1, y1 = bbox(floor.footprint)
+            for opening in floor.openings:
+                if opening.facade.value in ("南", "北"):
+                    low, high = x0, x1
+                else:
+                    low, high = y0, y1
+                self.assertGreaterEqual(opening.position, low - 1e-6)
+                self.assertLessEqual(opening.position + opening.width, high + 1e-6)
+
     def test_ldk_meets_minimum(self):
         ldk = next(r for f in self.building.floors for r in f.rooms if r.name == "LDK")
         self.assertGreaterEqual(ldk.area_m2, 16.0)
 
     def test_target_area_overrides_recommendation(self):
         building = layout.generate(self.site, self.envelope, target_floor_area_m2=90.0)
-        self.assertAlmostEqual(building.total_floor_area_m2, 90.0, places=6)
+        # 910mm グリッドに丸めるため、目標を超えない範囲で最も近い面積になる
+        self.assertLessEqual(building.total_floor_area_m2, 90.0 + 1e-6)
+        self.assertGreater(building.total_floor_area_m2, 90.0 * 0.85)
 
     def test_tight_envelope_produces_single_storey(self):
         site = make_site(width=8.0, depth=9.0, bcr=0.5, far=0.6)
@@ -92,7 +159,7 @@ class LayoutTest(unittest.TestCase):
             layout.to_svg(self.site, self.building, storey=9)
 
     def test_allocation_falls_back_to_proportional_when_area_is_tiny(self):
-        specs = layout.program_for(1, 2)[1]
+        specs = layout.program_for(1, 2)[1].rooms
         areas = layout._allocate_areas(specs, 10.0)
         self.assertAlmostEqual(sum(areas), 10.0, places=6)
         self.assertTrue(all(a > 0 for a in areas))

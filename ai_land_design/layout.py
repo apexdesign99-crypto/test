@@ -1,24 +1,47 @@
 """AI 間取り生成。
 
-建築可能ボリューム（建築面積・延床面積・階数）と家族構成から
-室構成（プログラム）を決め、各階の footprint を再帰分割して
-重なりなく敷き詰めた矩形の部屋配置を生成する。
+申請図面・BIM に載せられる水準にするため、次の3点を守って生成する。
 
-分割は面積比に基づく再帰二分割（slice & dice）。長辺方向に切るため、
-極端に細長い部屋が生じにくい。生成結果は SVG に描画できる。
+1. **910mm グリッド**（半間）— 室の寸法・位置をすべてグリッド上に載せる。
+   木造の実施設計はこのモジュールで進むため、半端寸法の平面は使えない。
+2. **動線コアの階間整合** — 階段・ホール・便所を敷地の道路側に立てた
+   幅1.82mのコア列にまとめ、階段の位置を全階で完全に一致させる。
+   上下階で階段がずれた平面は、そのままでは実施設計に渡せない。
+3. **開口部の生成** — 各室の外壁面に窓・玄関ドアを配置する。採光・換気の
+   法規判定（`compliance.py`）、立面図（`drawings.py`）、IFC の
+   IfcWindow / IfcDoor はすべてこの開口部を使う。
+
+分割は面積比に基づく再帰二分割（slice & dice）をグリッドのセル数で行うため、
+重なりなく敷き詰めつつ、すべての辺がグリッドに乗る。
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from .geometry import Point, Polygon, bbox, centroid, rectangle, scale_rect_to_area
-from .models import Building, Envelope, Floor, Room, Site, Structure
+from .geometry import Point, Polygon, bbox, rectangle
+from .models import (
+    Building,
+    Direction,
+    Envelope,
+    Floor,
+    Opening,
+    Room,
+    Site,
+    Structure,
+    is_habitable_name,
+)
 
+#: 基準グリッド（半間）[m]
+GRID_M = 0.91
+#: グリッド1マスの面積 [m2]
+CELL_AREA_M2 = GRID_M * GRID_M
 #: 1 畳 = 1.62 m2（中京間換算）
 JO_M2 = 1.62
+#: 動線コア列の幅（セル数）— 1.82m。階段幅+手すりの実寸に合わせる
+CORE_WIDTH_CELLS = 2
 
 
 @dataclass
@@ -29,6 +52,19 @@ class RoomSpec:
     weight: float  # 階内での面積配分比
     min_m2: float = 3.0
     max_m2: float = float("inf")  # 上限（余剰は上限のない室に回る）
+    cells: Optional[int] = None  # コア列に置く室の長さ（セル数）
+
+
+@dataclass
+class FloorProgram:
+    """1 フロアの室構成。"""
+
+    core: List[RoomSpec]  # 動線コア（玄関/ホール → 階段 → 便所 → 収納）
+    field: List[RoomSpec]  # 残りの居室・水回り
+
+    @property
+    def rooms(self) -> List[RoomSpec]:
+        return self.core + self.field
 
 
 def recommended_floor_area_m2(household_size: int) -> float:
@@ -41,57 +77,69 @@ def recommended_floor_area_m2(household_size: int) -> float:
     return 25.0 * household_size + 25.0
 
 
-def program_for(storeys: int, household_size: int) -> Dict[int, List[RoomSpec]]:
-    """階数と家族構成から各階の室プログラムを決める。"""
-    children = max(0, household_size - 2)
-    program: Dict[int, List[RoomSpec]] = {}
+def program_for(storeys: int, household_size: int) -> Dict[int, FloorProgram]:
+    """階数と家族構成から各階の室プログラムを決める。
 
-    program[1] = [
-        RoomSpec("玄関・ホール", 0.13, 3.3, 9.0),
-        RoomSpec("LDK", 0.45, 16.0),  # 余剰面積は LDK が吸収する
-        RoomSpec("浴室", 0.10, 3.0, 5.0),
-        RoomSpec("洗面脱衣室", 0.08, 2.5, 5.0),
-        RoomSpec("トイレ", 0.05, 1.5, 2.5),
-        RoomSpec("階段", 0.09, 2.6, 5.0),
-        RoomSpec("収納", 0.10, 2.0, 7.0),
-    ]
+    コア列の並び（玄関/ホール → 階段 → 便所）と各室のセル数は全階で共通に
+    するため、階段が上下階で必ず一致する。
+    """
+    children = max(0, household_size - 2)
+    program: Dict[int, FloorProgram] = {}
+
+    program[1] = FloorProgram(
+        core=[
+            RoomSpec("玄関・ホール", 0.13, 3.3, 9.0, cells=3),
+            RoomSpec("階段", 0.09, 2.6, 6.0, cells=3),
+            RoomSpec("トイレ", 0.05, 1.5, 2.5, cells=1),
+            RoomSpec("収納", 0.06, 1.5, 5.0, cells=None),
+        ],
+        field=[
+            RoomSpec("LDK", 0.45, 16.0),  # 余剰面積は LDK が吸収する
+            RoomSpec("浴室", 0.10, 3.0, 5.0),
+            RoomSpec("洗面脱衣室", 0.08, 2.5, 5.0),
+        ],
+    )
 
     if storeys >= 2:
-        upper: List[RoomSpec] = [
-            RoomSpec("主寝室", 0.30, 10.0, 22.0),
+        upper_field: List[RoomSpec] = [
+            RoomSpec("主寝室", 0.30, 10.0),  # 上階の余剰吸収室
             RoomSpec("ウォークインクローゼット", 0.09, 3.0, 8.0),
-            RoomSpec("ホール・階段", 0.13, 3.3, 10.0),
-            RoomSpec("トイレ", 0.06, 1.5, 2.5),
         ]
         rooms_on_2f = children if storeys == 2 else max(1, children - 1)
         for i in range(rooms_on_2f):
-            upper.append(RoomSpec(f"洋室{i + 1}", 0.21, 7.0, 14.0))
+            upper_field.append(RoomSpec(f"洋室{i + 1}", 0.21, 7.0, 14.0))
         if rooms_on_2f == 0:
-            upper.append(RoomSpec("書斎", 0.21, 6.0, 14.0))
-        program[2] = upper
+            upper_field.append(RoomSpec("書斎", 0.21, 6.0, 14.0))
+        program[2] = FloorProgram(core=_upper_core(), field=upper_field)
 
     if storeys >= 3:
-        third: List[RoomSpec] = [
-            RoomSpec("ホール・階段", 0.15, 3.3, 10.0),
+        third_field: List[RoomSpec] = [
             RoomSpec("納戸", 0.20, 4.0, 10.0),
+            RoomSpec(f"洋室{max(1, children)}", 0.35, 7.0, 14.0),
+            RoomSpec("フリースペース", 0.30, 6.0),  # 上限なし（余剰吸収）
         ]
-        remaining = max(1, children - (children - 1))
-        for i in range(remaining):
-            third.append(RoomSpec(f"洋室{children - remaining + i + 1}", 0.35, 7.0, 14.0))
-        third.append(RoomSpec("フリースペース", 0.30, 6.0))
-        program[3] = third
+        program[3] = FloorProgram(core=_upper_core(), field=third_field)
 
     return program
 
 
-def ldk_type(program: Dict[int, List[RoomSpec]]) -> str:
+def _upper_core() -> List[RoomSpec]:
+    """上階のコア列。1階と同じセル数にすることで階段位置が揃う。"""
+    return [
+        RoomSpec("ホール", 0.13, 3.3, 9.0, cells=3),
+        RoomSpec("階段", 0.09, 2.6, 6.0, cells=3),
+        RoomSpec("トイレ", 0.05, 1.5, 2.5, cells=1),
+        RoomSpec("納戸", 0.06, 1.5, 5.0, cells=None),
+    ]
+
+
+def ldk_type(program: Dict[int, FloorProgram]) -> str:
     """間取りタイプ（例: 4LDK）。"""
     private = 0
-    for rooms in program.values():
-        for r in rooms:
-            if r.name.startswith("洋室") or r.name in ("主寝室", "書斎", "納戸", "フリースペース"):
-                if r.name not in ("納戸",):
-                    private += 1
+    for floor_program in program.values():
+        for spec in floor_program.rooms:
+            if spec.name.startswith("洋室") or spec.name in ("主寝室", "書斎", "フリースペース"):
+                private += 1
     return f"{private}LDK"
 
 
@@ -128,23 +176,21 @@ def _allocate_areas(specs: Sequence[RoomSpec], total_area: float) -> List[float]
     return areas
 
 
-def _split(
+def _split_cells(
     specs: List[RoomSpec],
     areas: List[float],
-    x: float,
-    y: float,
-    w: float,
-    h: float,
-    storey: int,
-) -> List[Room]:
-    """矩形を面積比で再帰二分割し、部屋の矩形を確定する。"""
-    if not specs:
+    cx: int,
+    cy: int,
+    nx: int,
+    ny: int,
+) -> List[Tuple[RoomSpec, int, int, int, int]]:
+    """セル矩形を面積比で再帰二分割する。戻り値は (spec, x, y, nx, ny)。"""
+    if not specs or nx <= 0 or ny <= 0:
         return []
     if len(specs) == 1:
-        return [Room(specs[0].name, x, y, w, h, storey)]
+        return [(specs[0], cx, cy, nx, ny)]
 
-    total = sum(areas)
-    # 面積の累積が半分に最も近い位置で 2 グループに分ける。
+    total = sum(areas) or 1.0
     best_index, best_diff = 1, float("inf")
     running = 0.0
     for i in range(1, len(specs)):
@@ -152,60 +198,160 @@ def _split(
         diff = abs(running - total / 2)
         if diff < best_diff:
             best_diff, best_index = diff, i
-    first_area = sum(areas[:best_index])
-    ratio = first_area / total if total > 0 else 0.5
+    ratio = sum(areas[:best_index]) / total
 
-    if w >= h:  # 長辺で切る
-        w1 = w * ratio
-        return _split(specs[:best_index], areas[:best_index], x, y, w1, h, storey) + _split(
-            specs[best_index:], areas[best_index:], x + w1, y, w - w1, h, storey
+    if nx >= ny:  # 長辺で切る
+        if nx < 2:
+            return [(specs[0], cx, cy, nx, ny)]
+        n1 = min(max(1, round(nx * ratio)), nx - 1)
+        return _split_cells(specs[:best_index], areas[:best_index], cx, cy, n1, ny) + _split_cells(
+            specs[best_index:], areas[best_index:], cx + n1, cy, nx - n1, ny
         )
-    h1 = h * ratio
-    return _split(specs[:best_index], areas[:best_index], x, y, w, h1, storey) + _split(
-        specs[best_index:], areas[best_index:], x, y + h1, w, h - h1, storey
+    if ny < 2:
+        return [(specs[0], cx, cy, nx, ny)]
+    n1 = min(max(1, round(ny * ratio)), ny - 1)
+    return _split_cells(specs[:best_index], areas[:best_index], cx, cy, nx, n1) + _split_cells(
+        specs[best_index:], areas[best_index:], cx, cy + n1, nx, ny - n1
     )
 
 
-def footprint_for(
+def _slice_row(
+    specs: List[RoomSpec],
+    areas: List[float],
+    cx: int,
+    cy: int,
+    nx: int,
+    ny: int,
+) -> List[Tuple[RoomSpec, int, int, int, int]]:
+    """1列の室を東西方向にセル数で按分する。各室は列の上下辺に接する。"""
+    if not specs:
+        return []
+    # 居室は 1.82m（2セル）未満にしない。確保できない場合は再帰分割に委ねる
+    min_w = 2 if all(is_habitable_name(spec.name) for spec in specs) else 1
+    if nx < min_w * len(specs):
+        return _split_cells(specs, areas, cx, cy, nx, ny)
+
+    total = sum(areas) or 1.0
+    widths: List[int] = []
+    remaining = nx
+    for index, area_value in enumerate(areas):
+        if index == len(areas) - 1:
+            widths.append(remaining)
+            break
+        reserve = min_w * (len(areas) - index - 1)  # 後続の室の最小幅を残す
+        width = min(max(min_w, round(nx * area_value / total)), remaining - reserve)
+        widths.append(width)
+        remaining -= width
+
+    placed: List[Tuple[RoomSpec, int, int, int, int]] = []
+    offset = cx
+    for spec, width in zip(specs, widths):
+        placed.append((spec, offset, cy, width, ny))
+        offset += width
+    return placed
+
+
+def _split_perimeter(
+    specs: List[RoomSpec],
+    areas: List[float],
+    cx: int,
+    cy: int,
+    nx: int,
+    ny: int,
+) -> List[Tuple[RoomSpec, int, int, int, int]]:
+    """居室が必ず外壁（南北面）に接するように配置する。
+
+    奥行きのある区画は南列・北列の2列に分け、それぞれを東西に切る。
+    こうすると中央に埋もれる室が出ず、全居室で採光が取れる。
+    """
+    if not specs:
+        return []
+    if len(specs) == 1:
+        return [(specs[0], cx, cy, nx, ny)]
+    if ny < 6 or len(specs) < 3:
+        return _slice_row(specs, areas, cx, cy, nx, ny)
+
+    # 面積の大きい室から、合計の小さい列へ振り分ける（南列に主要室が入る）
+    south: List[int] = []
+    north: List[int] = []
+    south_area = north_area = 0.0
+    for index in sorted(range(len(specs)), key=lambda i: -areas[i]):
+        if south_area <= north_area:
+            south.append(index)
+            south_area += areas[index]
+        else:
+            north.append(index)
+            north_area += areas[index]
+    if not north:
+        return _slice_row(specs, areas, cx, cy, nx, ny)
+
+    south_cells = min(max(2, round(ny * south_area / (south_area + north_area))), ny - 2)
+    return _slice_row(
+        [specs[i] for i in south], [areas[i] for i in south], cx, cy, nx, south_cells
+    ) + _slice_row(
+        [specs[i] for i in north], [areas[i] for i in north], cx, cy + south_cells, nx,
+        ny - south_cells,
+    )
+
+
+def footprint_cells(
     site: Site,
     envelope: Envelope,
-    target_building_area_m2: float | None = None,
-    aspect_cap: float = 1.8,
-) -> Polygon:
-    """敷地の外接矩形から後退距離を引き、目標建築面積に合わせた矩形を返す。"""
+    target_building_area_m2: float,
+    aspect_cap: float = 1.7,
+) -> Tuple[int, int, float, float]:
+    """建物外形をグリッドのセル数で決める。
+
+    戻り値は (nx, ny, 原点x, 原点y)。原点は敷地外接矩形と後退距離から求める。
+    """
     min_x, min_y, max_x, max_y = bbox(site.polygon)
     setback = max(site.zoning.wall_setback_m, 0.5)
-    w = max(3.0, (max_x - min_x) - setback * 2)
-    h = max(3.0, (max_y - min_y) - setback * 2)
+    avail_w = max(GRID_M * 3, (max_x - min_x) - setback * 2)
+    avail_h = max(GRID_M * 3, (max_y - min_y) - setback * 2)
 
-    # 極端に細長い区画では建物の縦横比を抑える。
-    if w / h > aspect_cap:
-        w = h * aspect_cap
-    elif h / w > aspect_cap:
-        h = w * aspect_cap
+    limit = min(envelope.max_building_area_m2, target_building_area_m2, avail_w * avail_h)
+    target_cells = max(4.0, limit / CELL_AREA_M2)
 
-    rect = rectangle(min_x + setback, min_y + setback, w, h)
-    target = min(envelope.max_building_area_m2, w * h)
-    if target_building_area_m2 is not None:
-        target = min(target, target_building_area_m2)
-    rect = scale_rect_to_area(rect, target)
+    ratio = avail_w / avail_h
+    ny = max(2, int(round(math.sqrt(target_cells / ratio))))
+    nx = max(2, int(round(target_cells / ny)))
 
-    # 敷地の外接矩形内に収める。
-    rx0, ry0, rx1, ry1 = bbox(rect)
-    dx = max(0.0, min_x + setback - rx0) - max(0.0, rx1 - (max_x - setback))
-    dy = max(0.0, min_y + setback - ry0) - max(0.0, ry1 - (max_y - setback))
-    return [(px + dx, py + dy) for px, py in rect]
+    # 敷地・法規・縦横比の制約に収める
+    nx = min(nx, int(avail_w // GRID_M))
+    ny = min(ny, int(avail_h // GRID_M))
+    nx, ny = max(2, nx), max(2, ny)
+    if nx / ny > aspect_cap:
+        nx = max(2, int(ny * aspect_cap))
+    elif ny / nx > aspect_cap:
+        ny = max(2, int(nx * aspect_cap))
+    while nx * ny * CELL_AREA_M2 > limit + 1e-9 and (nx > 2 or ny > 2):
+        if nx >= ny and nx > 2:
+            nx -= 1
+        elif ny > 2:
+            ny -= 1
+        else:
+            break
+
+    width, height = nx * GRID_M, ny * GRID_M
+    x0 = min_x + setback + max(0.0, (avail_w - width) / 2)
+    y0 = min_y + setback + max(0.0, (avail_h - height) / 2)
+    return nx, ny, x0, y0
+
+
+def footprint_for(site: Site, envelope: Envelope, target_building_area_m2: float) -> Polygon:
+    """グリッドに乗った建物外形（矩形）を返す。"""
+    nx, ny, x0, y0 = footprint_cells(site, envelope, target_building_area_m2)
+    return rectangle(x0, y0, nx * GRID_M, ny * GRID_M)
 
 
 def plan_volume(
     envelope: Envelope,
     household_size: int,
-    target_floor_area_m2: float | None = None,
+    target_floor_area_m2: Optional[float] = None,
 ) -> Tuple[float, int]:
     """目標延床面積と階数を決める。
 
     法規上の上限（`envelope`）を超えない範囲で、家族構成に見合う規模を採用する。
-    上限が目標を下回る場合は上限側に張り付く。
     """
     target = target_floor_area_m2 or recommended_floor_area_m2(household_size)
     target = min(target, envelope.max_floor_area_m2)
@@ -219,55 +365,276 @@ def plan_volume(
     return target, storeys
 
 
+def core_side(site: Site) -> Direction:
+    """動線コア列を寄せる方位（原則として道路側）。"""
+    road = site.widest_road
+    if road is None:
+        return Direction.E
+    if road.direction in (Direction.E, Direction.W):
+        return road.direction
+    return Direction.E  # 南北道路のときは東側にコアを寄せ、南面を居室に空ける
+
+
+def _core_slots(core: Sequence[RoomSpec], length_cells: int) -> List[int]:
+    """コア列の各室に割り当てるセル数（全階で同じ結果になるよう決定的に決める）。"""
+    slots = [spec.cells or 0 for spec in core]
+    fixed = sum(slots)
+    if fixed > length_cells:  # 短い建物では優先度順に削る
+        for i in range(len(slots) - 1, -1, -1):
+            while slots[i] > 1 and sum(slots) > length_cells:
+                slots[i] -= 1
+        while sum(slots) > length_cells and len(slots) > 1:
+            slots.pop()
+    remaining = length_cells - sum(slots)
+    if remaining > 0:
+        # 末尾（収納・納戸）で余りを吸収する
+        slots[-1] += remaining
+    return slots
+
+
+def _place_core(
+    core: Sequence[RoomSpec],
+    slots: Sequence[int],
+    side: Direction,
+    nx: int,
+    ny: int,
+    entrance_at_south: bool,
+) -> List[Tuple[RoomSpec, int, int, int, int]]:
+    """コア列の室をセル座標に配置する。"""
+    placed: List[Tuple[RoomSpec, int, int, int, int]] = []
+    if side in (Direction.E, Direction.W):
+        cx = nx - CORE_WIDTH_CELLS if side is Direction.E else 0
+        offset = 0
+        order = range(len(slots)) if entrance_at_south else reversed(range(len(slots)))
+        for index in order:
+            cells = slots[index]
+            if cells <= 0:
+                continue
+            cy = offset if entrance_at_south else ny - offset - cells
+            placed.append((core[index], cx, cy, CORE_WIDTH_CELLS, cells))
+            offset += cells
+    else:  # 北・南に寄せる（東西道路のときは使わないが対称に扱う）
+        cy = ny - CORE_WIDTH_CELLS if side is Direction.N else 0
+        offset = 0
+        for index, cells in enumerate(slots):
+            if cells <= 0:
+                continue
+            placed.append((core[index], offset, cy, cells, CORE_WIDTH_CELLS))
+            offset += cells
+    return placed
+
+
+def _facades_of(room: Room, footprint: Polygon, eps: float = 1e-6) -> List[Direction]:
+    """室が外壁に面している方位を返す。"""
+    x0, y0, x1, y1 = bbox(footprint)
+    facades: List[Direction] = []
+    if abs(room.y - y0) < eps:
+        facades.append(Direction.S)
+    if abs(room.y + room.h - y1) < eps:
+        facades.append(Direction.N)
+    if abs(room.x - x0) < eps:
+        facades.append(Direction.W)
+    if abs(room.x + room.w - x1) < eps:
+        facades.append(Direction.E)
+    return facades
+
+
+def _facade_span(room: Room, facade: Direction) -> Tuple[float, float]:
+    """室が面する外壁の（開始位置, 長さ）。南北面は x、東西面は y。"""
+    if facade in (Direction.S, Direction.N):
+        return room.x, room.w
+    return room.y, room.h
+
+
+#: 採光に有利な方位の優先順
+_FACADE_PRIORITY = {Direction.S: 0, Direction.E: 1, Direction.W: 2, Direction.N: 3}
+
+
+def place_openings(
+    floor: Floor,
+    entrance_room: Optional[str],
+    entrance_facade: Optional[Direction],
+) -> List[Opening]:
+    """各室の外壁面に窓・玄関ドアを配置する。
+
+    居室には採光に必要な面積（床面積の 1/7）に 2 割の余裕を見た窓を、
+    水回りには換気用の小窓を、玄関には道路側の玄関ドアを置く。
+    """
+    openings: List[Opening] = []
+    for room in floor.rooms:
+        facades = _facades_of(room, floor.footprint)
+        if not facades:
+            continue
+        facades.sort(key=lambda f: _FACADE_PRIORITY[f])
+        facade = facades[0]
+        start, length = _facade_span(room, facade)
+        usable = max(0.0, length - 0.6)  # 両端に壁を残す
+        if usable < 0.6:
+            continue
+
+        if room.name == entrance_room and entrance_facade in facades:
+            start, length = _facade_span(room, entrance_facade)
+            width = min(1.2, max(0.9, length - 0.9))
+            openings.append(
+                Opening("玄関ドア", room.name, floor.storey, entrance_facade,
+                        start + (length - width) / 2, width, 2.0, 0.0)
+            )
+            continue
+
+        if room.is_habitable:
+            required = room.area_m2 / 7.0 * 1.2
+            height = 2.0 if (room.name == "LDK" and facade is Direction.S) else 1.2
+            kind = "掃出窓" if height >= 2.0 else "窓"
+            width = min(usable, max(1.2, required / height))
+            openings.append(
+                Opening(kind, room.name, floor.storey, facade,
+                        start + (length - width) / 2, width, height,
+                        0.0 if height >= 2.0 else 0.8)
+            )
+            # 1面で足りない場合は2面目に補助窓を設ける
+            if width * height < required - 1e-6 and len(facades) > 1:
+                second = facades[1]
+                s2, l2 = _facade_span(room, second)
+                w2 = min(max(0.0, l2 - 0.6), max(0.9, (required - width * height) / 1.2))
+                if w2 >= 0.6:
+                    openings.append(
+                        Opening("窓", room.name, floor.storey, second,
+                                s2 + (l2 - w2) / 2, w2, 1.2, 0.8)
+                    )
+        elif room.name in ("浴室", "洗面脱衣室", "トイレ", "階段", "ホール"):
+            width = min(usable, 0.9 if room.name != "階段" else 0.6)
+            if width >= 0.6:
+                openings.append(
+                    Opening("窓", room.name, floor.storey, facade,
+                            start + (length - width) / 2, width, 0.9, 1.2)
+                )
+    return openings
+
+
 def generate(
     site: Site,
     envelope: Envelope,
     household_size: int = 4,
     structure: Structure = Structure.WOOD,
     floor_height_m: float = 2.9,
-    target_floor_area_m2: float | None = None,
+    target_floor_area_m2: Optional[float] = None,
+    ceiling_height_m: float = 2.4,
 ) -> Building:
-    """間取り付きの建物案を生成する。"""
+    """間取り・開口部付きの建物案を生成する。"""
     target_area, storeys = plan_volume(envelope, household_size, target_floor_area_m2)
     if storeys == 0 or target_area <= 0:
         return Building(
-            structure=structure,
-            floors=[],
-            total_floor_area_m2=0.0,
-            height_m=0.0,
-            ldk_type="-",
+            structure=structure, floors=[], total_floor_area_m2=0.0, height_m=0.0, ldk_type="-"
         )
 
     program = program_for(storeys, household_size)
-    per_floor = target_area / storeys
-    base = footprint_for(site, envelope, target_building_area_m2=per_floor)
-    base_w = base[1][0] - base[0][0]
-    base_h = base[2][1] - base[1][1]
-    base_area = base_w * base_h
-    min_x, min_y, _, _ = bbox(base)
+    nx, ny, x0, y0 = footprint_cells(site, envelope, target_area / storeys)
+    footprint = rectangle(x0, y0, nx * GRID_M, ny * GRID_M)
+    floor_area = nx * ny * CELL_AREA_M2
+
+    side = core_side(site)
+    road = site.widest_road
+    entrance_at_south = not (road is not None and road.direction is Direction.N)
+    entrance_facade = road.direction if road is not None else Direction.S
+
+    # コア列のセル割りは 1 階で決め、全階で使い回す（階段位置を揃えるため）
+    core_length = ny if side in (Direction.E, Direction.W) else nx
+    slots = _core_slots(program[1].core, core_length)
 
     floors: List[Floor] = []
     remaining = min(target_area, envelope.max_floor_area_m2)
     for storey in range(1, storeys + 1):
-        area_this = min(base_area, remaining)
-        if area_this < 15.0:
+        if remaining < floor_area * 0.5:
             break
-        ratio = area_this / base_area if base_area > 0 else 1.0
-        w = base_w * math.sqrt(ratio)
-        h = base_h * math.sqrt(ratio)
-        footprint = rectangle(min_x, min_y, w, h)
+        floor_program = program.get(storey, program[max(program)])
+        placed = _place_core(floor_program.core, slots, side, nx, ny, entrance_at_south)
 
-        specs = program.get(storey, program[max(program)])
-        areas = _allocate_areas(specs, w * h)
-        # 面積の大きい室から分割すると、細長い室が生じにくい。
-        ordered = sorted(zip(specs, areas), key=lambda t: -t[1])
-        rooms = _split(
-            [s for s, _ in ordered], [a for _, a in ordered], min_x, min_y, w, h, storey
-        )
-        order = {s.name: i for i, s in enumerate(specs)}
+        # コア列を除いた残りの矩形に居室・水回りを敷き詰める
+        if side in (Direction.E, Direction.W):
+            field_x = CORE_WIDTH_CELLS if side is Direction.W else 0
+            field_nx, field_ny, field_y = nx - CORE_WIDTH_CELLS, ny, 0
+        else:
+            field_x, field_y = 0, CORE_WIDTH_CELLS if side is Direction.S else 0
+            field_nx, field_ny = nx, ny - CORE_WIDTH_CELLS
+        field_specs = list(floor_program.field)
+        field_area_total = field_nx * field_ny * CELL_AREA_M2
+        rough = _allocate_areas(field_specs, field_area_total)
+
+        # 水回り・収納はコア側の帯にまとめ、居室は外周側に置いて採光を確保する
+        service = [i for i, spec in enumerate(field_specs) if not is_habitable_name(spec.name)]
+        habitable = [i for i, spec in enumerate(field_specs) if is_habitable_name(spec.name)]
+        service_cells = 0
+        if service and habitable:
+            column_area = field_ny * CELL_AREA_M2
+            # ユニットバス（1.82m角）が納まる場合のみ最低2セル幅を確保する
+            min_cells = 2 if any(field_specs[i].name == "浴室" for i in service) else 1
+            cap_cells = max(min_cells, math.ceil(sum(field_specs[i].max_m2 for i in service) / column_area))
+            service_cells = min(
+                max(min_cells, round(sum(rough[i] for i in service) / column_area)),
+                cap_cells,
+                max(min_cells, field_nx - 2),
+            )
+        elif service:
+            service_cells = field_nx
+
+        if side is Direction.W:  # コアが西側 → 水回りは区画の西端
+            service_x, habitable_x = field_x, field_x + service_cells
+        else:  # コアが東側 → 水回りは区画の東端
+            service_x, habitable_x = field_x + (field_nx - service_cells), field_x
+
+        if service_cells:
+            strip_specs = [field_specs[i] for i in service]
+            strip_area = service_cells * field_ny * CELL_AREA_M2
+            capacity = sum(spec.max_m2 for spec in strip_specs)
+            if strip_area > capacity + 1.5:
+                # 帯が余る場合は家事室（上階は収納）を立てて上限超過を防ぐ
+                strip_specs.append(
+                    RoomSpec("家事室" if storey == 1 else "クローゼット", 0.15, 2.5)
+                )
+            # 縦長の帯になるため、長辺（南北）方向に切って水回りを積む
+            placed += _split_cells(
+                strip_specs,
+                _allocate_areas(strip_specs, strip_area),
+                service_x,
+                field_y,
+                service_cells,
+                field_ny,
+            )
+        if habitable:
+            hab_specs = [field_specs[i] for i in habitable]
+            hab_cells = field_nx - service_cells
+            placed += _split_perimeter(
+                hab_specs,
+                _allocate_areas(hab_specs, hab_cells * field_ny * CELL_AREA_M2),
+                habitable_x,
+                field_y,
+                hab_cells,
+                field_ny,
+            )
+
+        order = {spec.name: i for i, spec in enumerate(floor_program.rooms)}
+        # 生成時に追加した室（家事室など）は末尾に置く
+        rooms = [
+            Room(spec.name, x0 + cx * GRID_M, y0 + cy * GRID_M,
+                 w * GRID_M, h * GRID_M, storey)
+            for spec, cx, cy, w, h in placed
+        ]
         rooms.sort(key=lambda r: order.get(r.name, 99))
-        floors.append(Floor(storey=storey, footprint=footprint, rooms=rooms, height_m=floor_height_m))
-        remaining -= area_this
+
+        floor = Floor(
+            storey=storey,
+            footprint=footprint,
+            rooms=rooms,
+            height_m=floor_height_m,
+            ceiling_height_m=ceiling_height_m,
+        )
+        floor.openings = place_openings(
+            floor,
+            entrance_room="玄関・ホール" if storey == 1 else None,
+            entrance_facade=entrance_facade if storey == 1 else None,
+        )
+        floors.append(floor)
+        remaining -= floor_area
 
     total_area = sum(f.area_m2 for f in floors)
     height = min(len(floors) * floor_height_m + 1.6, envelope.max_height_m)
@@ -290,11 +657,7 @@ def _fit_label(name: str, width_px: float, font_px: float) -> str:
 
 
 def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0) -> str:
-    """指定階の平面図を SVG 文字列で返す（1m = `scale` px）。
-
-    小さい室ではラベルが枠からはみ出すため、室の寸法に応じて文字サイズを落とし、
-    面積表記の省略と室名の切り詰めを行う。完全な室名は `<title>` に残す。
-    """
+    """指定階の平面図を SVG 文字列で返す（1m = `scale` px）。開口部も描画する。"""
     floor = next((f for f in building.floors if f.storey == storey), None)
     if floor is None:
         raise ValueError(f"{storey}階は存在しない")
@@ -305,7 +668,6 @@ def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0)
     height = (max_y - min_y + margin * 2) * scale
 
     def px(p: Point) -> Tuple[float, float]:
-        # SVG は y 下向きのため反転する
         return ((p[0] - min_x + margin) * scale, (max_y - p[1] + margin) * scale)
 
     parts = [
@@ -320,22 +682,20 @@ def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0)
     )
 
     for room in floor.rooms:
-        x0, y0 = px((room.x, room.y + room.h))
+        rx, ry = px((room.x, room.y + room.h))
         w_px, h_px = room.w * scale, room.h * scale
         parts.append(
-            f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{w_px:.1f}" '
-            f'height="{h_px:.1f}" fill="#ffffff" stroke="#333333" stroke-width="2"/>'
+            f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{w_px:.1f}" height="{h_px:.1f}" '
+            f'fill="#ffffff" stroke="#333333" stroke-width="2"/>'
         )
-
         cx, cy = px((room.x + room.w / 2, room.y + room.h / 2))
         font = max(7.0, min(12.0, min(w_px, h_px) / 5.5))
         show_area = h_px >= font * 3.2 and w_px >= font * 5
         label = _fit_label(room.name, w_px - 4, font)
-        name_y = cy - 4 if show_area else cy + font / 3
         parts.append(
-            f'<text x="{cx:.1f}" y="{name_y:.1f}" font-size="{font:.1f}" text-anchor="middle" '
-            f'font-family="sans-serif" fill="#222222">{label}'
-            f'<title>{room.name} {room.jo:.1f}帖 / {room.area_m2:.1f}m²</title></text>'
+            f'<text x="{cx:.1f}" y="{cy - 4 if show_area else cy + font / 3:.1f}" '
+            f'font-size="{font:.1f}" text-anchor="middle" font-family="sans-serif" '
+            f'fill="#222222">{label}<title>{room.name} {room.jo:.1f}帖 / {room.area_m2:.1f}m²</title></text>'
         )
         if show_area:
             parts.append(
@@ -344,9 +704,25 @@ def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0)
                 f'{room.jo:.1f}帖 / {room.area_m2:.1f}m²</text>'
             )
 
+    # 開口部（外壁線上に太線で表現）
+    fx0, fy0, fx1, fy1 = bbox(floor.footprint)
+    for opening in floor.openings:
+        color = "#2f6f4f" if opening.kind == "玄関ドア" else "#4f7f9c"
+        if opening.facade in (Direction.S, Direction.N):
+            y = fy0 if opening.facade is Direction.S else fy1
+            a, b = px((opening.position, y)), px((opening.position + opening.width, y))
+        else:
+            x = fx0 if opening.facade is Direction.W else fx1
+            a, b = px((x, opening.position)), px((x, opening.position + opening.width))
+        parts.append(
+            f'<line x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}" '
+            f'stroke="{color}" stroke-width="5" stroke-linecap="butt">'
+            f'<title>{opening.kind} {opening.room} W{opening.width * 1000:.0f}×H{opening.height * 1000:.0f}</title></line>'
+        )
+
     parts.append(
         f'<text x="8" y="18" font-size="13" font-family="sans-serif" fill="#111111">'
-        f'{storey}階 平面図　{floor.area_m2:.1f}m² （{building.ldk_type}）</text>'
+        f'{storey}階 平面図　{floor.area_m2:.1f}m² （{building.ldk_type}）　S=1:100 相当</text>'
     )
     parts.append("</svg>")
     return "\n".join(parts)

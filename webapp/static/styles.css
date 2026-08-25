@@ -186,3 +186,14 @@ pre.markdown {
   .bar-row { grid-template-columns: 100px 1fr 42px; }
   .bar-comment { margin-left: 0; }
 }
+
+/* 法適合チェックの判定色 */
+tr.check-不適合 td { background: #fbeeec; }
+tr.check-要確認 td { background: #fdf6e9; }
+tr.check-適合 td:first-child { color: var(--accent); font-weight: 700; }
+tr.check-不適合 td:first-child { color: var(--danger); font-weight: 700; }
+tr.check-要確認 td:first-child { color: var(--warn); font-weight: 700; }
+td.small { font-size: 11px; color: var(--ink-soft); }
+.export-btn.strong { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.export-btn.strong:hover { background: #275c42; color: #fff; }
+.export-btn.strong:disabled { background: #9bb3a6; border-color: #9bb3a6; }

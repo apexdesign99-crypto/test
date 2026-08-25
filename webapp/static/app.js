@@ -238,8 +238,25 @@ function collectPayload() {
       structure: form.structure.value,
       grade: form.grade.value,
       floor_height_m: Number(form.floor_height_m.value) || 2.9,
+      ceiling_height_m: Number(form.ceiling_height_m.value) || 2.4,
       target_floor_area_m2: numberOrNull(form.target_floor_area_m2.value),
       market_unit_price_per_tsubo: numberOrNull(form.market_unit_price_per_tsubo.value),
+    },
+    application: {
+      owner: {
+        name: form.owner_name.value,
+        address: form.owner_address.value,
+        phone: form.owner_phone.value,
+      },
+      designer: {
+        name: form.designer_name.value,
+        qualification: form.designer_qualification.value,
+        office: form.designer_office.value,
+      },
+      supervisor: { name: form.supervisor_name.value },
+      builder: { name: form.builder_name.value },
+      start_date: form.start_date.value,
+      completion_date: form.completion_date.value,
     },
   };
   if (isRectMode()) {
@@ -349,7 +366,9 @@ function render(data) {
   resultBody.classList.remove("hidden");
   renderDiagnosis(data);
   renderEnvelope(data);
+  renderCodeCheck(data);
   renderPlan(data);
+  renderDrawings(data);
   renderCost(data);
   renderExports(data);
 }
@@ -430,22 +449,91 @@ function metric(label, value, sub = "") {
   }</div>`;
 }
 
+function renderCodeCheck(data) {
+  const card = document.getElementById("code-card");
+  const check = data.code_check;
+  if (!check) {
+    card.innerHTML = "";
+    return;
+  }
+  const mark = { 適合: "✓", 不適合: "✗", 要確認: "△" };
+  const banner = check.ready
+    ? '<div class="banner ok">不適合なし — 申請図書の作成に進めます</div>'
+    : '<div class="banner ng">不適合あり — 計画の修正が必要です</div>';
+
+  card.innerHTML = `
+    <h2 class="card-title">3. 法適合チェック（確認申請 事前チェック）</h2>
+    ${banner}
+    <div class="metrics">
+      ${metric("適合", `${check.summary["適合"]}<small> 項目</small>`)}
+      ${metric("不適合", `${check.summary["不適合"]}<small> 項目</small>`)}
+      ${metric("要確認", `${check.summary["要確認"]}<small> 項目</small>`)}
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>判定</th><th>項目</th><th>根拠</th><th>要求</th><th>実績</th></tr></thead>
+        <tbody>
+          ${check.items
+            .map(
+              (item) =>
+                `<tr class="check-${item.result}"><td>${mark[item.result]}</td>` +
+                `<td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.law)}</td>` +
+                `<td>${escapeHtml(item.required)}</td><td>${escapeHtml(item.actual)}</td></tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function renderDrawings(data) {
+  const card = document.getElementById("drawing-card");
+  const d = data.drawings || {};
+  if (!d.site_plan) {
+    card.innerHTML = "";
+    return;
+  }
+  const tabs = [
+    { id: "site", label: "配置図", svg: d.site_plan },
+    ...(d.plans || []).map((p) => ({ id: `plan${p.storey}`, label: `${p.storey}階 平面図`, svg: p.svg })),
+    ...(d.elevations || []).map((e) => ({ id: `elev${e.facade}`, label: `${e.facade}立面図`, svg: e.svg })),
+    { id: "section", label: "断面図", svg: d.section },
+    { id: "area", label: "求積図", svg: d.area_calculation },
+    { id: "exterior", label: "3D 外観", svg: d.exterior },
+  ];
+
+  card.innerHTML = `
+    <h2 class="card-title">4. 申請図面</h2>
+    <div class="tabs">${tabs
+      .map((t, i) => `<button type="button" class="tab ${i === 0 ? "active" : ""}" data-tab="${t.id}">${t.label}</button>`)
+      .join("")}</div>
+    <div class="drawing" id="drawing-view"></div>
+    <p class="hint">図面は自動生成の下書きです。確認申請には建築士による確認・加筆が必要です。</p>`;
+
+  const view = document.getElementById("drawing-view");
+  const show = (id) => {
+    const tab = tabs.find((t) => t.id === id);
+    view.innerHTML = tab?.svg || '<p class="hint">図面がありません</p>';
+  };
+  card.querySelectorAll(".tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      card.querySelectorAll(".tab").forEach((b) => b.classList.toggle("active", b === btn));
+      show(btn.dataset.tab);
+    });
+  });
+  show(tabs[0].id);
+}
+
 function renderPlan(data) {
   const card = document.getElementById("plan-card");
   if (!data.building) {
-    card.innerHTML = `<h2 class="card-title">3. AI 間取り / 3D 外観</h2>
+    card.innerHTML = `<h2 class="card-title">3. AI 間取り</h2>
       <p class="hint">建築可能判定で不可となったため、間取り以降は算出していません。</p>`;
     return;
   }
   const b = data.building;
-  const plans = data.drawings.plans || [];
-  const tabs = [
-    ...plans.map((p) => ({ id: `plan-${p.storey}`, label: `${p.storey}階 平面図`, svg: p.svg })),
-    { id: "exterior", label: "3D 外観", svg: data.drawings.exterior },
-  ];
-
   card.innerHTML = `
-    <h2 class="card-title">3. AI 間取り / 3D 外観</h2>
+    <h2 class="card-title">3'. AI 間取り</h2>
     <div class="metrics">
       ${metric("間取り", b.ldk_type)}
       ${metric("構造・階数", `${escapeHtml(b.structure)} ${b.storeys}<small> 階建</small>`)}
@@ -453,42 +541,30 @@ function renderPlan(data) {
       ${metric("建築面積", `${fmtNum(b.footprint_area_m2)}<small> m²</small>`)}
       ${metric("最高高さ", `${fmtNum(b.height_m)}<small> m</small>`, `屋根 ${escapeHtml(b.roof)}`)}
     </div>
-    <div class="tabs">${tabs
-      .map((t, i) => `<button type="button" class="tab ${i === 0 ? "active" : ""}" data-tab="${t.id}">${t.label}</button>`)
-      .join("")}</div>
-    <div class="drawing" id="drawing"></div>
-    <div class="table-scroll" style="margin-top:14px">
+    <div class="table-scroll">
       <table>
-        <thead><tr><th>階</th><th>室名</th><th class="num">面積</th><th class="num">帖数</th><th class="num">寸法</th></tr></thead>
+        <thead><tr><th>階</th><th>室名</th><th>区分</th><th class="num">面積</th><th class="num">帖数</th><th class="num">寸法</th><th>開口部</th></tr></thead>
         <tbody>
           ${b.floors
             .flatMap((floor) =>
-              floor.rooms.map(
-                (room) =>
-                  `<tr><td>${floor.storey}F</td><td>${escapeHtml(room.name)}</td><td class="num">${fmtNum(
-                    room.area_m2
-                  )} m²</td><td class="num">${fmtNum(room.jo, 1)} 帖</td><td class="num">${fmtNum(
-                    room.w
-                  )} × ${fmtNum(room.h)} m</td></tr>`
-              )
+              floor.rooms.map((room) => {
+                const openings = (floor.openings || [])
+                  .filter((o) => o.room === room.name)
+                  .map((o) => `${o.facade}${o.kind} ${(o.width * 1000).toFixed(0)}×${(o.height * 1000).toFixed(0)}`)
+                  .join("<br>");
+                return `<tr><td>${floor.storey}F</td><td>${escapeHtml(room.name)}</td>` +
+                  `<td>${room.is_habitable ? "居室" : "—"}</td>` +
+                  `<td class="num">${fmtNum(room.area_m2)} m²</td>` +
+                  `<td class="num">${fmtNum(room.jo, 1)} 帖</td>` +
+                  `<td class="num">${(room.w * 1000).toFixed(0)} × ${(room.h * 1000).toFixed(0)}</td>` +
+                  `<td class="small">${openings}</td></tr>`;
+              })
             )
             .join("")}
         </tbody>
       </table>
-    </div>`;
-
-  const drawing = document.getElementById("drawing");
-  const show = (id) => {
-    const tab = tabs.find((t) => t.id === id);
-    drawing.innerHTML = tab?.svg || '<p class="hint">図面がありません</p>';
-  };
-  card.querySelectorAll(".tab").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      card.querySelectorAll(".tab").forEach((b2) => b2.classList.toggle("active", b2 === btn));
-      show(btn.dataset.tab);
-    });
-  });
-  show(tabs[0].id);
+    </div>
+    <p class="hint">寸法は 910mm グリッド。階段は全階で同一位置に配置しています。</p>`;
 }
 
 function renderCost(data) {
@@ -549,55 +625,71 @@ function renderCost(data) {
 function renderExports(data) {
   const buildable = !!data.building;
   const plans = data.drawings?.plans || [];
+  const elevations = data.drawings?.elevations || [];
   const buttons = [
+    { fmt: "package", label: "★ 申請パッケージ一式 (.zip)", needsBuilding: true, primary: true },
+    { fmt: "application-html", label: "確認申請 記載事項＋図面 (.html)", needsBuilding: true },
     { fmt: "ifc", label: "BIM モデル (.ifc)", needsBuilding: true },
-    { fmt: "obj", label: "3D マッシング (.obj)", needsBuilding: true },
-    { fmt: "exterior-svg", label: "外観図 (.svg)", needsBuilding: true },
+    { fmt: "compliance-md", label: "法適合チェック (.md)", needsBuilding: true },
+    { fmt: "site-plan-svg", label: "配置図 (.svg)", needsBuilding: true },
     ...plans.map((p) => ({
-      fmt: "plan-svg",
-      storey: p.storey,
-      label: `${p.storey}階 平面図 (.svg)`,
-      needsBuilding: true,
+      fmt: "plan-svg", storey: p.storey, label: `${p.storey}階 平面図 (.svg)`, needsBuilding: true,
     })),
-    { fmt: "permit-md", label: "確認申請 準備資料 (.md)", needsBuilding: true },
+    ...elevations.map((e) => ({
+      fmt: "elevation-svg", facade: e.facade, label: `${e.facade}立面図 (.svg)`, needsBuilding: true,
+    })),
+    { fmt: "section-svg", label: "断面図 (.svg)", needsBuilding: true },
+    { fmt: "area-svg", label: "求積図 (.svg)", needsBuilding: true },
+    { fmt: "obj", label: "3D マッシング (.obj)", needsBuilding: true },
+    { fmt: "permit-md", label: "図書チェックリスト (.md)", needsBuilding: true },
     { fmt: "report-md", label: "事業性レポート (.md)", needsBuilding: false },
     { fmt: "report-json", label: "計算結果 (.json)", needsBuilding: false },
   ];
 
   document.getElementById("export-card").innerHTML = `
-    <h2 class="card-title">5. 成果物のダウンロード</h2>
+    <h2 class="card-title">6. 成果物のダウンロード</h2>
     <div class="exports">
       ${buttons
         .map(
           (b) =>
-            `<button type="button" class="export-btn" data-fmt="${b.fmt}" data-storey="${
-              b.storey || 1
-            }" ${b.needsBuilding && !buildable ? "disabled" : ""}>${b.label}</button>`
+            `<button type="button" class="export-btn${b.primary ? " strong" : ""}" ` +
+            `data-fmt="${b.fmt}" data-storey="${b.storey || 1}" data-facade="${b.facade || "南"}" ` +
+            `${b.needsBuilding && !buildable ? "disabled" : ""}>${b.label}</button>`
         )
         .join("")}
     </div>
     <details style="margin-top:16px">
-      <summary class="hint" style="cursor:pointer">レポート全文（Markdown）</summary>
+      <summary class="hint" style="cursor:pointer">事業性レポート全文</summary>
       <pre class="markdown">${escapeHtml(data.markdown || "")}</pre>
     </details>
-    ${
-      data.permit_markdown
-        ? `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">確認申請 準備資料</summary><pre class="markdown">${escapeHtml(
-            data.permit_markdown
-          )}</pre></details>`
-        : ""
-    }`;
+    ${detailsBlock("確認申請 記載事項（第一面〜第五面）", data.application_markdown)}
+    ${detailsBlock("法適合チェック", data.compliance_markdown)}
+    ${detailsBlock("設計図書チェックリスト", data.permit_markdown)}`;
 
   document.querySelectorAll(".export-btn").forEach((btn) => {
-    btn.addEventListener("click", () => download(btn.dataset.fmt, Number(btn.dataset.storey)));
+    btn.addEventListener("click", () =>
+      download(btn.dataset.fmt, Number(btn.dataset.storey), btn.dataset.facade)
+    );
   });
 }
 
-async function download(fmt, storey) {
+function detailsBlock(title, content) {
+  if (!content) return "";
+  return (
+    `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">${title}</summary>` +
+    `<pre class="markdown">${escapeHtml(content)}</pre></details>`
+  );
+}
+
+async function download(fmt, storey, facade) {
   if (!lastPayload) return;
   setStatus("生成中…");
   try {
-    const response = await fetch(`/api/export/${fmt}?storey=${storey}`, {
+    const url =
+      fmt === "package"
+        ? "/api/package"
+        : `/api/export/${fmt}?storey=${storey}&facade=${encodeURIComponent(facade || "南")}`;
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(lastPayload),
@@ -607,16 +699,18 @@ async function download(fmt, storey) {
       throw new Error(data.detail || "ダウンロードに失敗しました");
     }
     const disposition = response.headers.get("Content-Disposition") || "";
-    const match = disposition.match(/filename="?([^"]+)"?/);
+    // RFC 5987 の filename* を優先し、なければ ASCII の filename を使う
+    const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const match = utf8 ? [null, decodeURIComponent(utf8[1])] : disposition.match(/filename="?([^";]+)"?/);
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
+    const objectUrl = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.href = url;
+    link.href = objectUrl;
     link.download = match ? match[1] : `output.${fmt}`;
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(objectUrl);
     setStatus("ダウンロードしました");
   } catch (error) {
     setStatus(error.message, true);

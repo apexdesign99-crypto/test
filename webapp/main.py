@@ -6,15 +6,27 @@
 
 from __future__ import annotations
 
+import io
 import json
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from ai_land_design import __version__, exterior, layout, pipeline
+from ai_land_design import (
+    __version__,
+    application as application_module,
+    compliance as compliance_module,
+    drawings as drawings_module,
+    exterior,
+    layout,
+    pipeline,
+)
 from ai_land_design.bim import to_ifc
 from ai_land_design.cost import GRADE_FACTOR
 from ai_land_design.documents import to_markdown as permit_markdown
@@ -136,28 +148,69 @@ def analyze(request: AnalyzeRequest) -> JSONResponse:
     payload["drawings"] = {"plans": [], "exterior": None}
 
     if result.building and result.building.floors:
+        site, envelope, building = result.site, result.envelope, result.building
         payload["drawings"]["plans"] = [
-            {
-                "storey": floor.storey,
-                "svg": layout.to_svg(result.site, result.building, floor.storey),
-            }
-            for floor in result.building.floors
+            {"storey": floor.storey, "svg": layout.to_svg(site, building, floor.storey)}
+            for floor in building.floors
         ]
-        payload["drawings"]["exterior"] = exterior.to_svg(result.building)
-        payload["permit_markdown"] = permit_markdown(
-            result.site, result.envelope, result.building
+        payload["drawings"]["exterior"] = exterior.to_svg(building)
+        payload["drawings"]["site_plan"] = drawings_module.site_plan_svg(site, building, envelope)
+        payload["drawings"]["elevations"] = [
+            {"facade": facade, "svg": svg}
+            for facade, svg in drawings_module.all_elevations_svg(site, building).items()
+        ]
+        payload["drawings"]["section"] = drawings_module.section_svg(site, building)
+        payload["drawings"]["area_calculation"] = drawings_module.area_calculation_svg(
+            site, building
         )
+        payload["permit_markdown"] = permit_markdown(site, envelope, building)
+        payload["application_markdown"] = application_module.to_markdown(
+            site, envelope, building, result.options.application
+        )
+        if result.code_check:
+            payload["compliance_markdown"] = compliance_module.to_markdown(result.code_check)
     return JSONResponse(payload)
 
+
+#: 日本語ファイル名の ASCII 代替（Content-Disposition の fallback 用）
+_ASCII_ALIAS = {"南": "south", "北": "north", "東": "east", "西": "west"}
+
+
+def content_disposition(filename: str) -> str:
+    """Content-Disposition ヘッダ。
+
+    HTTP ヘッダは latin-1 しか通らないため、日本語を含むファイル名は
+    RFC 5987 の `filename*` で渡し、`filename` には ASCII 代替を入れる。
+    """
+    ascii_name = filename
+    for japanese, alias in _ASCII_ALIAS.items():
+        ascii_name = ascii_name.replace(japanese, alias)
+    ascii_name = ascii_name.encode("ascii", "ignore").decode("ascii") or "download"
+    return (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
+
+
+SVG = "image/svg+xml"
+MARKDOWN = "text/markdown; charset=utf-8"
 
 EXPORT_FORMATS = {
     "ifc": ("model.ifc", "application/x-step"),
     "obj": ("massing.obj", "text/plain; charset=utf-8"),
-    "report-md": ("report.md", "text/markdown; charset=utf-8"),
+    "report-md": ("report.md", MARKDOWN),
     "report-json": ("report.json", "application/json"),
-    "permit-md": ("permit.md", "text/markdown; charset=utf-8"),
-    "plan-svg": ("plan.svg", "image/svg+xml"),
-    "exterior-svg": ("exterior.svg", "image/svg+xml"),
+    "permit-md": ("permit.md", MARKDOWN),
+    "plan-svg": ("plan.svg", SVG),
+    "exterior-svg": ("exterior.svg", SVG),
+    "site-plan-svg": ("site_plan.svg", SVG),
+    "elevation-svg": ("elevation.svg", SVG),
+    "section-svg": ("section.svg", SVG),
+    "area-svg": ("area_calculation.svg", SVG),
+    "application-html": ("application.html", "text/html; charset=utf-8"),
+    "application-md": ("application.md", MARKDOWN),
+    "compliance-md": ("compliance.md", MARKDOWN),
+    "compliance-json": ("compliance.json", "application/json"),
 }
 
 
@@ -166,6 +219,7 @@ def export(
     fmt: str,
     request: AnalyzeRequest,
     storey: int = Query(default=1, ge=1, le=10, description="plan-svg のときの階数"),
+    facade: str = Query(default="南", description="elevation-svg のときの方位"),
 ) -> Response:
     """成果物を1ファイルとしてダウンロードする。"""
     if fmt not in EXPORT_FORMATS:
@@ -184,25 +238,76 @@ def export(
             raise HTTPException(
                 status_code=409, detail="建築可能判定で不可となったため、この成果物は生成できません"
             )
+        site, envelope, building = result.site, result.envelope, result.building
         if fmt == "ifc":
-            body = to_ifc(result.site, result.building, project_name=result.options.project_name)
+            body = to_ifc(
+                site, building, project_name=result.options.project_name, envelope=envelope
+            )
         elif fmt == "obj":
-            body = exterior.build_massing(result.building).to_obj(result.site.site_id)
+            body = exterior.build_massing(building).to_obj(site.site_id)
         elif fmt == "permit-md":
-            body = permit_markdown(result.site, result.envelope, result.building)
+            body = permit_markdown(site, envelope, building)
         elif fmt == "exterior-svg":
-            body = exterior.to_svg(result.building)
+            body = exterior.to_svg(building)
+        elif fmt == "site-plan-svg":
+            body = drawings_module.site_plan_svg(site, building, envelope)
+        elif fmt == "section-svg":
+            body = drawings_module.section_svg(site, building)
+        elif fmt == "area-svg":
+            body = drawings_module.area_calculation_svg(site, building)
+        elif fmt == "elevation-svg":
+            direction = next((d for d in Direction if d.value == facade), None)
+            if direction is None:
+                raise HTTPException(status_code=422, detail=f"未知の方位: {facade}")
+            body = drawings_module.elevation_svg(site, building, direction)
+            filename = f"elevation_{facade}.svg"
+        elif fmt == "application-html":
+            body = application_module.to_html(
+                site, envelope, building, result.options.application, result.code_check,
+                drawings_module.all_drawings(site, building, envelope),
+            )
+        elif fmt == "application-md":
+            body = application_module.to_markdown(
+                site, envelope, building, result.options.application
+            )
+        elif fmt == "compliance-md":
+            if result.code_check is None:
+                raise HTTPException(status_code=409, detail="法適合チェックがありません")
+            body = compliance_module.to_markdown(result.code_check)
+        elif fmt == "compliance-json":
+            if result.code_check is None:
+                raise HTTPException(status_code=409, detail="法適合チェックがありません")
+            body = json.dumps(result.code_check.to_dict(), ensure_ascii=False, indent=2)
         else:  # plan-svg
-            if storey > len(result.building.floors):
+            if storey > len(building.floors):
                 raise HTTPException(status_code=404, detail=f"{storey}階は存在しません")
-            body = layout.to_svg(result.site, result.building, storey)
+            body = layout.to_svg(site, building, storey)
             filename = f"plan_{storey}f.svg"
 
     prefix = result.site.site_id or "site"
     return Response(
         content=body,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{prefix}_{filename}"'},
+        headers={"Content-Disposition": content_disposition(f"{prefix}_{filename}")},
+    )
+
+
+@app.post("/api/package")
+def package(request: AnalyzeRequest) -> Response:
+    """確認申請パッケージ（図面・IFC・申請書・チェック・レポート）を ZIP で返す。"""
+    result = _run(request)
+    files = pipeline.application_package(result)
+    buffer = io.BytesIO()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+    root = f"{result.site.site_id or 'site'}_{stamp}"
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, content in files.items():
+            archive.writestr(f"{root}/{name}", content)
+    buffer.seek(0)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": content_disposition(f"{root}.zip")},
     )
 
 

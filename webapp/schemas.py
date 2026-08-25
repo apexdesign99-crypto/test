@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ai_land_design.application import ApplicationInfo, Party
 from ai_land_design.models import Direction, FireZone, Structure, UseDistrict
 from ai_land_design.pipeline import Options
 from ai_land_design.sources.gis import site_from_dict
@@ -63,11 +64,55 @@ class HazardIn(BaseModel):
     quake_intensity_rank: int = Field(default=3, ge=1, le=5)
 
 
+class PartyIn(BaseModel):
+    """申請に関わる者（建築主・設計者など）。未入力可。"""
+
+    name: str = ""
+    address: str = ""
+    phone: str = ""
+    qualification: str = ""
+    registration: str = ""
+    office: str = ""
+
+    def to_party(self) -> Party:
+        return Party(**self.model_dump())
+
+
+class ApplicationIn(BaseModel):
+    """確認申請書に記載する当事者・工程の情報。"""
+
+    owner: PartyIn = Field(default_factory=PartyIn, description="建築主")
+    agent: PartyIn = Field(default_factory=PartyIn, description="代理者")
+    designer: PartyIn = Field(default_factory=PartyIn, description="設計者")
+    supervisor: PartyIn = Field(default_factory=PartyIn, description="工事監理者")
+    builder: PartyIn = Field(default_factory=PartyIn, description="工事施工者")
+    application_date: Optional[str] = None
+    start_date: str = ""
+    completion_date: str = ""
+    work_type: str = "新築"
+    main_use: str = "一戸建ての住宅"
+
+    def to_info(self) -> ApplicationInfo:
+        return ApplicationInfo(
+            owner=self.owner.to_party(),
+            agent=self.agent.to_party(),
+            designer=self.designer.to_party(),
+            supervisor=self.supervisor.to_party(),
+            builder=self.builder.to_party(),
+            application_date=self.application_date,
+            start_date=self.start_date,
+            completion_date=self.completion_date,
+            work_type=self.work_type,
+            main_use=self.main_use,
+        )
+
+
 class OptionsIn(BaseModel):
     household_size: int = Field(default=4, ge=1, le=10)
     structure: str = Field(default=Structure.WOOD.value)
     grade: str = Field(default="標準")
     floor_height_m: float = Field(default=2.9, ge=2.2, le=5.0)
+    ceiling_height_m: float = Field(default=2.4, ge=1.8, le=4.0)
     target_floor_area_m2: Optional[float] = Field(default=None, gt=0, le=3000)
     market_unit_price_per_tsubo: Optional[int] = Field(default=None, ge=0)
 
@@ -87,15 +132,19 @@ class OptionsIn(BaseModel):
             raise ValueError(f"未知のグレード: {value}")
         return value
 
-    def to_options(self, land_price_jpy: Optional[int]) -> Options:
+    def to_options(
+        self, land_price_jpy: Optional[int], application: Optional[ApplicationInfo] = None
+    ) -> Options:
         return Options(
             household_size=self.household_size,
             structure=next(s for s in Structure if s.value == self.structure),
             grade=self.grade,
             floor_height_m=self.floor_height_m,
+            ceiling_height_m=self.ceiling_height_m,
             target_floor_area_m2=self.target_floor_area_m2,
             market_unit_price_per_tsubo=self.market_unit_price_per_tsubo,
             land_price_jpy=land_price_jpy,
+            application=application or ApplicationInfo(),
         )
 
 
@@ -118,6 +167,7 @@ class AnalyzeRequest(BaseModel):
     station_distance_m: Optional[int] = Field(default=None, ge=0, le=20000)
     note: str = ""
     options: OptionsIn = Field(default_factory=OptionsIn)
+    application: ApplicationIn = Field(default_factory=ApplicationIn)
 
     @field_validator("polygon")
     @classmethod
@@ -155,4 +205,4 @@ class AnalyzeRequest(BaseModel):
         return site_from_dict(self.to_site_dict())
 
     def to_options(self) -> Options:
-        return self.options.to_options(self.land_price_jpy)
+        return self.options.to_options(self.land_price_jpy, self.application.to_info())

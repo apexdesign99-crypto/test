@@ -106,7 +106,10 @@
         <label class="field"><span>グレード</span><select name="grade" id="grade"></select></label>
       </div>
       <div class="grid-2">
+        <label class="field"><span>天井高 (m)</span><input type="number" name="ceiling_height_m" value="2.4" step="any" min="1.8" max="4"></label>
         <label class="field"><span>目標延床 (m²)</span><input type="number" name="target_floor_area_m2" placeholder="自動" step="any" min="20"></label>
+      </div>
+      <div class="grid-2">
         <label class="field">
           <span>相場坪単価 (円) <button type="button" class="ghost" id="fetch-market">周辺相場から取得</button></span>
           <input type="number" name="market_unit_price_per_tsubo" placeholder="任意" step="any" min="0">
@@ -114,8 +117,31 @@
       </div>
     </section>
 
+    <section class="form-section">
+      <div class="section-head"><h2>確認申請 記載事項</h2></div>
+      <p class="hint">申請書（第一面・第二面）に転記する情報。未入力でも診断・図面は出力できます。</p>
+      <div class="grid-2">
+        <label class="field"><span>建築主 氏名</span><input type="text" name="owner_name" placeholder="山田 太郎"></label>
+        <label class="field"><span>建築主 電話</span><input type="text" name="owner_phone" placeholder="03-0000-0000"></label>
+      </div>
+      <label class="field"><span>建築主 住所</span><input type="text" name="owner_address" placeholder="東京都〇〇区〇〇1-1-1"></label>
+      <div class="grid-2">
+        <label class="field"><span>設計者 資格</span><input type="text" name="designer_qualification" placeholder="一級建築士"></label>
+        <label class="field"><span>設計者 氏名</span><input type="text" name="designer_name" placeholder="設計 花子"></label>
+      </div>
+      <label class="field"><span>設計者 建築士事務所（登録番号）</span><input type="text" name="designer_office" placeholder="〇〇設計事務所（東京都知事登録 第00000号）"></label>
+      <div class="grid-2">
+        <label class="field"><span>工事監理者 氏名</span><input type="text" name="supervisor_name"></label>
+        <label class="field"><span>工事施工者 氏名</span><input type="text" name="builder_name"></label>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>着工予定</span><input type="text" name="start_date" placeholder="2026-10-01"></label>
+        <label class="field"><span>完了予定</span><input type="text" name="completion_date" placeholder="2027-03-31"></label>
+      </div>
+    </section>
+
     <div class="actions">
-      <button type="submit" class="primary" id="submit-btn">診断する</button>
+      <button type="submit" class="primary" id="submit-btn">診断・作図する</button>
       <span class="status" id="form-status"></span>
     </div>
   </form>
@@ -125,14 +151,18 @@
     <div class="panel placeholder" id="placeholder">
       <h2>敷地条件を入力して「診断する」</h2>
       <p>接道義務・建蔽率・容積率・斜線制限を判定し、間取り、3D外観、建築費、総事業費、
-         IFC（BIM）、確認申請の準備資料までを自動生成します。</p>
+         IFC（BIM）、確認申請の図面・記載事項までを自動生成します。</p>
+      <p>出力：配置図・各階平面図・立面図4面・断面図・求積図／法適合チェック／
+         確認申請書の記載事項／IFC（開口部・属性つき）。まとめて ZIP で取得できます。</p>
       <p class="hint">左のサンプルから読み込むと、すぐに動作を確認できます。</p>
     </div>
 
     <div id="result-body" class="hidden">
       <section class="panel" id="diagnosis-card"></section>
       <section class="panel" id="envelope-card"></section>
+      <section class="panel" id="code-card"></section>
       <section class="panel" id="plan-card"></section>
+      <section class="panel" id="drawing-card"></section>
       <section class="panel" id="cost-card"></section>
       <section class="panel" id="export-card"></section>
     </div>

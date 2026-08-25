@@ -287,6 +287,15 @@ class Envelope:
         }
 
 
+#: 居室（採光・換気の規定が適用される室）の名称
+HABITABLE_ROOMS = ("LDK", "主寝室", "洋室", "書斎", "和室", "子供室")
+
+
+def is_habitable_name(name: str) -> bool:
+    """室名が居室（法2条4号）にあたるか。"""
+    return any(name.startswith(prefix) for prefix in HABITABLE_ROOMS)
+
+
 @dataclass
 class Room:
     name: str
@@ -295,6 +304,11 @@ class Room:
     w: float
     h: float
     storey: int = 1
+
+    @property
+    def is_habitable(self) -> bool:
+        """居室かどうか（法2条4号）。水回り・玄関・階段・納戸は居室ではない。"""
+        return is_habitable_name(self.name)
 
     @property
     def area_m2(self) -> float:
@@ -309,6 +323,7 @@ class Room:
         return {
             "name": self.name,
             "storey": self.storey,
+            "is_habitable": self.is_habitable,
             "x": round(self.x, 3),
             "y": round(self.y, 3),
             "w": round(self.w, 3),
@@ -319,23 +334,65 @@ class Room:
 
 
 @dataclass
+class Opening:
+    """開口部（窓・出入口）。
+
+    位置は facade（面する方位）に沿った世界座標で保持する。
+    南北面なら `position` は x 座標、東西面なら y 座標。
+    """
+
+    kind: str  # "窓" | "掃出窓" | "玄関ドア"
+    room: str
+    storey: int
+    facade: "Direction"
+    position: float  # 面に沿った開始位置 [m]
+    width: float
+    height: float
+    sill_m: float  # 床からの下端高さ
+
+    @property
+    def area_m2(self) -> float:
+        return self.width * self.height
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "room": self.room,
+            "storey": self.storey,
+            "facade": self.facade.value,
+            "position": round(self.position, 3),
+            "width": round(self.width, 3),
+            "height": round(self.height, 3),
+            "sill_m": round(self.sill_m, 3),
+            "area_m2": round(self.area_m2, 2),
+        }
+
+
+@dataclass
 class Floor:
     storey: int
     footprint: Polygon
     rooms: List[Room]
     height_m: float
+    openings: List[Opening] = field(default_factory=list)
+    ceiling_height_m: float = 2.4
 
     @property
     def area_m2(self) -> float:
         return area(self.footprint)
 
+    def room(self, name: str) -> Optional[Room]:
+        return next((r for r in self.rooms if r.name == name), None)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "storey": self.storey,
             "height_m": self.height_m,
+            "ceiling_height_m": self.ceiling_height_m,
             "area_m2": round(self.area_m2, 2),
             "footprint": [list(p) for p in self.footprint],
             "rooms": [r.to_dict() for r in self.rooms],
+            "openings": [o.to_dict() for o in self.openings],
         }
 
 
