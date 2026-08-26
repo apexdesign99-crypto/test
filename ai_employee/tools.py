@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .company import KINDS, STAGES, STATUSES, CompanyError, ProjectLedger
 from .workspace import Workspace, WorkspaceError, now
 
 # Opus 4.6 以降で使えるサーバ側 Web 検索ツール。
@@ -49,8 +50,12 @@ def _obj(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     }
 
 
-def build_tools(workspace: Workspace) -> dict[str, Tool]:
-    """ワークスペースに紐づいた全ツールを構築する。"""
+def build_tools(
+    workspace: Workspace, ledger: ProjectLedger | None = None
+) -> dict[str, Tool]:
+    """ワークスペースと案件台帳に紐づいた全ツールを構築する。"""
+    ledger = ledger or ProjectLedger(workspace.root.parent)
+    me = workspace.employee_id
 
     def current_datetime() -> dict[str, Any]:
         stamp = now()
@@ -62,16 +67,26 @@ def build_tools(workspace: Workspace) -> dict[str, Tool]:
             "weekday": f"{weekdays[stamp.weekday()]}曜日",
         }
 
-    def record_note(title: str, body: str, tags: list[str] | None = None) -> dict:
-        return workspace.add_note(title, body, tags)
+    def record_note(
+        title: str,
+        body: str,
+        tags: list[str] | None = None,
+        project_id: str | None = None,
+    ) -> dict:
+        if project_id:
+            ledger.get(project_id)  # 存在しない案件への紐付けを防ぐ
+        return workspace.add_note(title, body, tags, project_id)
 
     def search_notes(
         query: str | None = None,
         tag: str | None = None,
         since: str | None = None,
         limit: int = 10,
+        project_id: str | None = None,
     ) -> dict:
-        hits = workspace.search_notes(query=query, tag=tag, since=since, limit=limit)
+        hits = workspace.search_notes(
+            query=query, tag=tag, since=since, limit=limit, project_id=project_id
+        )
         return {"count": len(hits), "notes": hits}
 
     def add_task(title: str, detail: str = "", due: str | None = None) -> dict:
@@ -85,6 +100,76 @@ def build_tools(workspace: Workspace) -> dict[str, Tool]:
         return workspace.close_task(
             task_id, result, status="cancelled" if cancelled else "done"
         )
+
+    def add_project(
+        name: str,
+        client: str = "",
+        kind: str = "その他",
+        stage: str = "反響",
+        source: str = "",
+        site: str = "",
+        budget: str = "",
+        owner: str = "",
+    ) -> dict:
+        return ledger.add(
+            name=name,
+            client=client,
+            kind=kind,
+            stage=stage,
+            source=source,
+            site=site,
+            budget=budget,
+            owner=owner or me,
+            by=me,
+        )
+
+    def list_projects(
+        stage: str | None = None,
+        status: str = "active",
+        owner: str | None = None,
+        query: str | None = None,
+    ) -> dict:
+        hits = ledger.list(stage=stage, status=status, owner=owner, query=query)
+        # 一覧では履歴を落とす(全文は get_project で取る)。
+        slim = [{k: v for k, v in p.items() if k != "history"} for p in hits]
+        return {"count": len(slim), "projects": slim}
+
+    def get_project(project_id: str) -> dict:
+        return ledger.get(project_id)
+
+    def update_project(
+        project_id: str,
+        note: str,
+        stage: str | None = None,
+        status: str | None = None,
+        next_action: str | None = None,
+        next_due: str | None = None,
+        budget: str | None = None,
+        owner: str | None = None,
+        client: str | None = None,
+        site: str | None = None,
+    ) -> dict:
+        return ledger.update(
+            project_id,
+            note=note,
+            by=me,
+            stage=stage,
+            status=status,
+            next_action=next_action,
+            next_due=next_due,
+            budget=budget,
+            owner=owner,
+            client=client,
+            site=site,
+        )
+
+    def log_project(project_id: str, entry: str) -> dict:
+        updated = ledger.log(project_id, entry, by=me)
+        return {"id": updated["id"], "history": updated["history"][-1]}
+
+    def pipeline() -> dict:
+        counts = ledger.pipeline()
+        return {"active_total": sum(counts.values()), "by_stage": counts}
 
     def list_files(subdir: str = "") -> dict:
         files = workspace.list_files(subdir)
@@ -117,7 +202,11 @@ def build_tools(workspace: Workspace) -> dict[str, Tool]:
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "検索用のタグ(顧客名・案件名など)",
+                        "description": "検索用のタグ(顧客名・工種など)",
+                    },
+                    "project_id": {
+                        "type": "string",
+                        "description": "紐付ける案件の ID。案件に関する記録なら必ず指定する。",
                     },
                 },
                 ["title", "body"],
@@ -136,6 +225,10 @@ def build_tools(workspace: Workspace) -> dict[str, Tool]:
                         "description": "この日時以降のみ (例 2026-04-01)",
                     },
                     "limit": {"type": "integer", "description": "最大件数(既定 10)"},
+                    "project_id": {
+                        "type": "string",
+                        "description": "この案件に紐づくメモだけに絞る",
+                    },
                 },
                 [],
             ),
@@ -186,6 +279,90 @@ def build_tools(workspace: Workspace) -> dict[str, Tool]:
             complete_task,
         ),
         Tool(
+            "add_project",
+            "案件台帳に新しい案件を登録する。反響・問い合わせが入った時点で必ず起こすこと。"
+            "既存案件の重複登録を避けるため、先に list_projects で確認する。",
+            _obj(
+                {
+                    "name": {"type": "string", "description": "案件名 (例: 田中邸 新築)"},
+                    "client": {"type": "string", "description": "施主・顧客名"},
+                    "kind": {"type": "string", "enum": list(KINDS), "description": "用途種別"},
+                    "stage": {"type": "string", "enum": list(STAGES), "description": "現在のステージ(既定 反響)"},
+                    "source": {"type": "string", "description": "流入経路 (例: HP問い合わせ, 紹介, Instagram)"},
+                    "site": {"type": "string", "description": "計画地"},
+                    "budget": {"type": "string", "description": "予算(聞けている範囲で。推測しない)"},
+                    "owner": {"type": "string", "description": "主担当の社員 ID(既定は自分)"},
+                },
+                ["name"],
+            ),
+            add_project,
+        ),
+        Tool(
+            "list_projects",
+            "案件台帳を検索する。既定では進行中案件のみ、次アクションの期限が近い順に返る。"
+            "案件の話をする前にまずこれで現状を確認すること。",
+            _obj(
+                {
+                    "stage": {"type": "string", "enum": list(STAGES), "description": "このステージのみ"},
+                    "status": {
+                        "type": "string",
+                        "enum": [*STATUSES, "all"],
+                        "description": "active(進行中) / won(受注) / lost(失注) / onhold(保留) / done(完了) / all",
+                    },
+                    "owner": {"type": "string", "description": "主担当の社員 ID"},
+                    "query": {"type": "string", "description": "案件名・顧客名・計画地の部分一致"},
+                },
+                [],
+            ),
+            list_projects,
+        ),
+        Tool(
+            "get_project",
+            "案件 1 件の全項目と、これまでの経緯(履歴)を取得する。"
+            "誰が何をしたかを確認してから動くこと。",
+            _obj({"project_id": {"type": "string", "description": "案件 ID"}}, ["project_id"]),
+            get_project,
+        ),
+        Tool(
+            "update_project",
+            "案件の状態を更新する。ステージが進んだとき、次アクションが決まったとき、"
+            "受注・失注が確定したときに使う。note に「何をなぜ変えたか」を必ず書く。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "note": {"type": "string", "description": "更新理由(履歴に残る。必須)"},
+                    "stage": {"type": "string", "enum": list(STAGES), "description": "新しいステージ"},
+                    "status": {"type": "string", "enum": list(STATUSES), "description": "新しいステータス"},
+                    "next_action": {"type": "string", "description": "次にやること"},
+                    "next_due": {"type": "string", "description": "次アクションの期限 (例 2026-09-30)"},
+                    "budget": {"type": "string", "description": "予算"},
+                    "owner": {"type": "string", "description": "主担当の社員 ID"},
+                    "client": {"type": "string", "description": "施主・顧客名"},
+                    "site": {"type": "string", "description": "計画地"},
+                },
+                ["project_id", "note"],
+            ),
+            update_project,
+        ),
+        Tool(
+            "log_project",
+            "案件の履歴に出来事を 1 行追記する。項目は変えずに経緯だけ残したいときに使う。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "entry": {"type": "string", "description": "起きた事実"},
+                },
+                ["project_id", "entry"],
+            ),
+            log_project,
+        ),
+        Tool(
+            "pipeline",
+            "進行中案件のステージ別件数を取得する。営業会議や受注見込みの把握に使う。",
+            _obj({}, []),
+            pipeline,
+        ),
+        Tool(
             "list_files",
             "ワークスペースに保存されている成果物ファイルの一覧を取得する。",
             _obj({"subdir": {"type": "string", "description": "対象サブフォルダ"}}, []),
@@ -219,8 +396,14 @@ def build_tools(workspace: Workspace) -> dict[str, Tool]:
 class ToolBox:
     """プロフィールの権限に従ってツールを絞り込み、実行を仲介する。"""
 
-    def __init__(self, workspace: Workspace, allowed: list[str], web_access: bool = False):
-        available = build_tools(workspace)
+    def __init__(
+        self,
+        workspace: Workspace,
+        allowed: list[str],
+        web_access: bool = False,
+        ledger: ProjectLedger | None = None,
+    ):
+        available = build_tools(workspace, ledger)
         unknown = [name for name in allowed if name not in available]
         if unknown:
             raise ValueError(f"未知のツールが指定されています: {unknown}")
@@ -244,7 +427,7 @@ class ToolBox:
             return f"ツール '{name}' は利用権限がありません。", True
         try:
             result = tool.handler(**arguments)
-        except WorkspaceError as exc:
+        except (WorkspaceError, CompanyError) as exc:
             return f"エラー: {exc}", True
         except TypeError as exc:
             return f"エラー: 引数が不正です ({exc})", True

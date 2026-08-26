@@ -15,6 +15,7 @@ from .config import (
     MAX_TOKENS,
     MAX_TOOL_ITERATIONS,
 )
+from .company import ProjectLedger
 from .profile import EmployeeProfile
 from .tools import ToolBox
 from .workspace import Workspace, now
@@ -78,11 +79,16 @@ class Employee:
         workspace: Workspace,
         client: Any = None,
         listener: Listener | None = None,
+        ledger: ProjectLedger | None = None,
     ) -> None:
         self.profile = profile
         self.workspace = workspace
         self.listener = listener or Listener()
-        self.toolbox = ToolBox(workspace, profile.tools, profile.web_access)
+        # 案件台帳は事務所で 1 つ。社員のワークスペースの親(= 会社)に置く。
+        self.ledger = ledger or ProjectLedger(workspace.root.parent)
+        self.toolbox = ToolBox(
+            workspace, profile.tools, profile.web_access, ledger=self.ledger
+        )
         self._client = client
 
     # ---------------------------------------------------------------- クライアント
@@ -115,6 +121,19 @@ class Employee:
             volatile.append(f"  - [{task['id']}] {task['title']}{due}")
         if len(open_tasks) > 20:
             volatile.append(f"  - ...ほか {len(open_tasks) - 20} 件")
+
+        # 自分が主担当の進行中案件は、毎回の判断材料になるので常に渡す。
+        mine = self.ledger.list(owner=self.profile.employee_id)
+        volatile.append(f"- 自分が主担当の進行中案件: {len(mine)} 件")
+        for project in mine[:15]:
+            due = f" / 期限 {project['next_due']}" if project.get("next_due") else ""
+            action = project.get("next_action") or "次アクション未設定"
+            volatile.append(
+                f"  - [{project['id']}] {project['name']} ({project['stage']}) "
+                f"→ {action}{due}"
+            )
+        if len(mine) > 15:
+            volatile.append(f"  - ...ほか {len(mine) - 15} 件")
 
         return [
             {

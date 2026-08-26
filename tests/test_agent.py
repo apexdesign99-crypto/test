@@ -227,3 +227,40 @@ def test_台本より多く呼ばれたら検知できる(workspace, profile):
     employee, _ = make(workspace, profile, [call_tool("current_datetime", {})])
     with pytest.raises(AssertionError):
         employee.work("やって")
+
+
+def test_自分が主担当の進行中案件が毎回の判断材料に入る(workspace, profile):
+    """案件は揮発側に置く。更新のたびにプロフィールのキャッシュを壊さないため。"""
+    employee, client = make(workspace, profile, [say("はい")])
+    project = employee.ledger.add("田中邸 新築", owner=profile.employee_id, by="shukyaku")
+    employee.ledger.update(
+        project["id"], "相談実施", stage="初回相談", next_action="現地調査の日程調整"
+    )
+    other = employee.ledger.add("他人の案件", owner="someone-else")
+
+    employee.work("状況を教えて")
+    stable, volatile = client.messages.calls[0]["system"]
+
+    assert "田中邸 新築" in volatile["text"]
+    assert "現地調査の日程調整" in volatile["text"]
+    assert other["name"] not in volatile["text"]  # 他人の案件は載せない
+    assert "田中邸 新築" not in stable["text"]
+
+
+def test_案件ツールが社員に渡っている(workspace, profile):
+    employee, client = make(workspace, profile, [say("はい")])
+    employee.work("やって")
+    names = [t.get("name") for t in client.messages.calls[0]["tools"]]
+    assert {"add_project", "list_projects", "get_project", "update_project"} <= set(names)
+
+
+def test_社員は同じ案件台帳を共有する(workspace, profile, tmp_path):
+    from ai_employee.workspace import Workspace
+
+    other_ws = Workspace("bim", tmp_path)
+    other_ws.save_profile(profile)
+    a = Employee(profile, workspace, client=FakeClient([]))
+    b = Employee(profile, other_ws, client=FakeClient([]))
+
+    created = a.ledger.add("田中邸 新築", by="eigyo")
+    assert b.ledger.get(created["id"])["name"] == "田中邸 新築"

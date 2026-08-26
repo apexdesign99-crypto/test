@@ -71,3 +71,96 @@ def test_current_datetime_は日付情報を返す(workspace):
     )
     assert not is_error
     assert set(json.loads(output)) == {"iso", "date", "time", "weekday"}
+
+
+# ------------------------------------------------------- 案件台帳ツール
+
+
+def test_案件ツールは台帳を共有する(workspace, tmp_path):
+    """別の社員が起こした案件を、他の社員がそのまま見られる。"""
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+    from ai_employee.workspace import Workspace
+
+    ledger = ProjectLedger(tmp_path)
+    shukyaku = ToolBox(Workspace("shukyaku", tmp_path), ["add_project"], ledger=ledger)
+    eigyo = ToolBox(Workspace("eigyo", tmp_path), ["list_projects"], ledger=ledger)
+
+    shukyaku.run("add_project", {"name": "田中邸 新築", "source": "HP問い合わせ"})
+    output, is_error = eigyo.run("list_projects", {})
+    assert not is_error
+    assert json.loads(output)["projects"][0]["name"] == "田中邸 新築"
+
+
+def test_案件登録は起票した社員を担当と履歴に記録する(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["add_project", "get_project"], ledger=ledger)
+    created = json.loads(box.run("add_project", {"name": "田中邸 新築"})[0])
+    assert created["owner"] == workspace.employee_id
+    assert created["history"][0]["by"] == workspace.employee_id
+
+
+def test_一覧は履歴を含めず全文は_get_project_で取る(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(
+        workspace, ["add_project", "list_projects", "get_project"], ledger=ProjectLedger(tmp_path)
+    )
+    pid = json.loads(box.run("add_project", {"name": "田中邸 新築"})[0])["id"]
+    listed = json.loads(box.run("list_projects", {})[0])["projects"][0]
+    assert "history" not in listed
+    assert json.loads(box.run("get_project", {"project_id": pid})[0])["history"]
+
+
+def test_更新理由なしの案件更新はエラー結果になる(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(workspace, ["add_project", "update_project"], ledger=ProjectLedger(tmp_path))
+    pid = json.loads(box.run("add_project", {"name": "田中邸 新築"})[0])["id"]
+    output, is_error = box.run("update_project", {"project_id": pid, "note": "", "stage": "見積"})
+    assert is_error
+    assert "更新理由" in output
+
+
+def test_存在しない案件へのメモ紐付けは拒否される(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(workspace, ["record_note"], ledger=ProjectLedger(tmp_path))
+    output, is_error = box.run(
+        "record_note", {"title": "商談", "body": "面談", "project_id": "deadbeef"}
+    )
+    assert is_error
+    assert "案件が見つかりません" in output
+
+
+def test_メモを案件で絞り込める(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(
+        workspace, ["add_project", "record_note", "search_notes"], ledger=ProjectLedger(tmp_path)
+    )
+    pid = json.loads(box.run("add_project", {"name": "田中邸 新築"})[0])["id"]
+    box.run("record_note", {"title": "初回相談", "body": "予算未確認", "project_id": pid})
+    box.run("record_note", {"title": "社内会議", "body": "案件と無関係"})
+
+    hits = json.loads(box.run("search_notes", {"project_id": pid})[0])
+    assert hits["count"] == 1
+    assert hits["notes"][0]["title"] == "初回相談"
+
+
+def test_パイプラインツールが集計を返す(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(workspace, ["add_project", "pipeline"], ledger=ProjectLedger(tmp_path))
+    box.run("add_project", {"name": "田中邸 新築"})
+    result = json.loads(box.run("pipeline", {})[0])
+    assert result["active_total"] == 1
+    assert result["by_stage"]["反響"] == 1

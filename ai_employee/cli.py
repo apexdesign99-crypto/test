@@ -12,16 +12,31 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from .agent import Employee, Listener
 from .config import office_root
-from .profile import TEMPLATES, EmployeeProfile, build_profile, slugify
+from .company import STAGES, CompanyError, ProjectLedger
+from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
 
 # ANSI 色。パイプ出力時は無効化する。
 _COLOR = sys.stdout.isatty()
+
+
+def _width(text: str) -> int:
+    """端末上の表示幅。全角文字を 2 桁として数える。"""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def _pad(text: str, width: int, gap: int = 1) -> str:
+    """表示幅を揃えて右側を空白で埋める。
+
+    幅を超える項目でも列がくっつかないよう、最低 `gap` 桁は必ず空ける。
+    """
+    return text + " " * max(gap, width - _width(text))
 
 
 def _c(code: str, text: str) -> str:
@@ -119,6 +134,78 @@ def cmd_hire(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_hire_team(args: argparse.Namespace) -> int:
+    """設計事務所の標準的な陣容(集客・営業・マーケ・事務・BIM)を一括採用する。"""
+    hired, skipped = [], []
+    for employee_id, name, template in DEFAULT_TEAM:
+        ws = _workspace(employee_id, args.office)
+        if ws.exists() and not args.force:
+            skipped.append(employee_id)
+            continue
+        profile = build_profile(employee_id, name, template=template)
+        ws.save_profile(profile)
+        hired.append(profile)
+
+    for profile in hired:
+        print(
+            f"  採用: {profile.employee_id:<10} {_pad(profile.name, 12)}"
+            f"{profile.department}/{profile.role}"
+        )
+    if skipped:
+        print(DIM(f"  既に在籍のため見送り: {', '.join(skipped)} (--force で上書き)"))
+    if hired:
+        print()
+        print(BOLD(f"{len(hired)} 名を採用しました。"))
+        print(f"次: python -m ai_employee ask --id shukyaku \"HP から問い合わせが入りました。…\"")
+    return 0
+
+
+def cmd_projects(args: argparse.Namespace) -> int:
+    """案件台帳を人間が確認する。"""
+    ledger = ProjectLedger(args.office)
+    if args.pipeline:
+        counts = ledger.pipeline()
+        total = sum(counts.values())
+        print(BOLD(f"進行中案件 {total} 件"))
+        for stage in STAGES:
+            if counts[stage]:
+                bar = "█" * counts[stage]
+                print(f"  {_pad(stage, 10)}{counts[stage]:>3}  {CYAN(bar)}")
+        return 0
+
+    projects = ledger.list(stage=args.stage, status=args.status, owner=args.owner, query=args.query)
+    if not projects:
+        print("該当する案件はありません。")
+        return 0
+    for pj in projects:
+        due = f"  期限 {pj['next_due']}" if pj.get("next_due") else ""
+        print(BOLD(f"[{pj['id']}] {pj['name']}") + f"  {pj['stage']}/{pj['status']}" + DIM(due))
+        detail = "  ".join(
+            filter(None, [pj.get("client"), pj.get("kind"), pj.get("site"), pj.get("source")])
+        )
+        if detail:
+            print(DIM(f"    {detail}"))
+        print(f"    次: {pj.get('next_action') or DIM('未設定')}  担当: {pj.get('owner') or '-'}")
+    return 0
+
+
+def cmd_project(args: argparse.Namespace) -> int:
+    """案件 1 件の詳細と、これまでの経緯を表示する。"""
+    pj = ProjectLedger(args.office).get(args.project_id)
+    print(BOLD(f"[{pj['id']}] {pj['name']}"))
+    for label, key in [
+        ("施主", "client"), ("用途", "kind"), ("計画地", "site"),
+        ("流入経路", "source"), ("予算", "budget"), ("主担当", "owner"),
+        ("ステージ", "stage"), ("ステータス", "status"),
+        ("次アクション", "next_action"), ("期限", "next_due"),
+    ]:
+        print(f"  {_pad(label, 12, gap=0)}: {pj.get(key) or DIM('-')}")
+    print(BOLD(f"\n  経緯 ({len(pj['history'])} 件)"))
+    for entry in pj["history"]:
+        print(f"    {entry['at'][:16]}  {entry['by']:<10} {entry['entry']}")
+    return 0
+
+
 def cmd_roster(args: argparse.Namespace) -> int:
     people = roster(args.office)
     if not people:
@@ -128,7 +215,10 @@ def cmd_roster(args: argparse.Namespace) -> int:
     for p in people:
         ws = _workspace(p.employee_id, args.office)
         open_tasks = len(ws.list_tasks("open"))
-        print(f"  {p.employee_id:<14} {p.name}  {p.department}/{p.role}  未完了 {open_tasks} 件")
+        print(
+            f"  {p.employee_id:<10} {_pad(p.name, 12)}"
+            f"{_pad(p.department + '/' + p.role, 26, gap=2)}未完了 {open_tasks} 件"
+        )
     return 0
 
 
@@ -256,6 +346,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_hire.add_argument("--force", action="store_true", help="既存社員を上書き")
     p_hire.set_defaults(func=cmd_hire)
 
+    p_team = sub.add_parser(
+        "hire-team", help="設計事務所の標準陣容(集客・営業・マーケ・事務・BIM)を一括採用する"
+    )
+    p_team.add_argument("--force", action="store_true", help="既存社員を上書き")
+    p_team.set_defaults(func=cmd_hire_team)
+
+    p_projects = sub.add_parser("projects", help="案件台帳を一覧する")
+    p_projects.add_argument("--stage", choices=list(STAGES), help="このステージのみ")
+    p_projects.add_argument(
+        "--status",
+        default="active",
+        choices=["active", "won", "lost", "onhold", "done", "all"],
+    )
+    p_projects.add_argument("--owner", help="主担当の社員 ID")
+    p_projects.add_argument("--query", help="案件名・顧客名・計画地の部分一致")
+    p_projects.add_argument(
+        "--pipeline", action="store_true", help="ステージ別の件数だけを表示する"
+    )
+    p_projects.set_defaults(func=cmd_projects)
+
+    p_project = sub.add_parser("project", help="案件 1 件の詳細と経緯を表示する")
+    p_project.add_argument("project_id", help="案件 ID")
+    p_project.set_defaults(func=cmd_project)
+
     p_roster = sub.add_parser("roster", help="在籍者を一覧する")
     p_roster.set_defaults(func=cmd_roster)
 
@@ -303,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except WorkspaceError as exc:
+    except (WorkspaceError, CompanyError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:

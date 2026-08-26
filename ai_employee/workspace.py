@@ -90,7 +90,11 @@ class Workspace:
     # ------------------------------------------------------------ 業務メモ
 
     def add_note(
-        self, title: str, body: str, tags: Iterable[str] | None = None
+        self,
+        title: str,
+        body: str,
+        tags: Iterable[str] | None = None,
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         note = {
             "id": _short_id(),
@@ -98,6 +102,7 @@ class Workspace:
             "title": title.strip(),
             "body": body.strip(),
             "tags": sorted({t.strip() for t in (tags or []) if t.strip()}),
+            "project_id": (project_id or "").strip() or None,
         }
         self.root.mkdir(parents=True, exist_ok=True)
         with self.notes_path.open("a", encoding="utf-8") as fh:
@@ -119,6 +124,7 @@ class Workspace:
         tag: str | None = None,
         since: str | None = None,
         limit: int = 10,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """新しい順にメモを検索する。query は題名・本文の部分一致(大小無視)。"""
         needle = (query or "").strip().lower()
@@ -129,6 +135,8 @@ class Workspace:
             if tag and tag not in note.get("tags", []):
                 continue
             if since and note["created_at"] < since:
+                continue
+            if project_id and note.get("project_id") != project_id:
                 continue
             hits.append((index, note))
         # 同一秒に記録されたメモが前後しないよう、記録順を副キーにする。
