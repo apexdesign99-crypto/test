@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .feasibility import height_limits
 from .geometry import bbox
+from .structure import TABLE_LEGACY, SeismicTable, WallQuantityReport
+from .structure import evaluate as evaluate_walls
 from .models import (
     Building,
     Direction,
@@ -152,7 +154,67 @@ def stair_dimensions(building: Building) -> Optional[Tuple[float, float, float, 
     return inner_w, riser, tread, steps
 
 
-def evaluate(site: Site, envelope: Envelope, building: Building) -> ComplianceReport:
+def wall_quantity_items(
+    building: Building, report: Optional[WallQuantityReport]
+) -> List[CheckItem]:
+    """壁量計算の結果をチェック項目にする（令46条4項）。"""
+    if building.structure is not Structure.WOOD:
+        return [
+            CheckItem(
+                "手続き", "構造安全性", "令36条ほか",
+                f"{building.structure.value}の構造計算",
+                "本ツールの壁量計算は木造軸組構法のみ対応", CHECK,
+                "許容応力度計算等が必要",
+            )
+        ]
+    if report is None:
+        return []
+
+    axis_label = {"X": "桁行方向", "Y": "張り間方向"}
+    items: List[CheckItem] = []
+    for floor in report.floors:
+        for direction in floor.directions:
+            # 係数表が最新であると確認できていない間は、満たしていても「要確認」とする
+            if not direction.ok:
+                result = FAIL
+            elif report.verified:
+                result = PASS
+            else:
+                result = CHECK
+            items.append(
+                CheckItem(
+                    "単体規定",
+                    f"{floor.storey}階 {axis_label[direction.axis]} の壁量",
+                    "令46条4項",
+                    f"必要壁量 {direction.required_cm:.0f}cm 以上（{direction.governing}で決定）",
+                    f"存在壁量 {direction.existing_cm:.0f}cm（充足率 {direction.ratio:.2f}）",
+                    result,
+                    report.table.note if not report.verified else "",
+                )
+            )
+            if direction.quarter_ratio is not None:
+                items.append(
+                    CheckItem(
+                        "単体規定",
+                        f"{floor.storey}階 {axis_label[direction.axis]} の壁の配置",
+                        "令46条4項・告示1352号（四分割法）",
+                        "壁率比 0.5 以上",
+                        f"壁率比 {direction.quarter_ratio:.2f}（"
+                        + " / ".join(f"{k} {v:.2f}" for k, v in direction.quarter_detail.items())
+                        + "）",
+                        _verdict(direction.balance_ok),
+                        "耐力壁は外周壁と一定長さ以上の間仕切壁を仮定した概算",
+                    )
+                )
+    return items
+
+
+def evaluate(
+    site: Site,
+    envelope: Envelope,
+    building: Building,
+    wall_report: Optional[WallQuantityReport] = None,
+) -> ComplianceReport:
     """建物案の法適合をチェックする。"""
     items: List[CheckItem] = []
     zoning = site.zoning
@@ -370,15 +432,16 @@ def evaluate(site: Site, envelope: Envelope, building: Building) -> ComplianceRe
     )
 
     # ---------- 手続き・別途検討 ----------
+    items.extend(wall_quantity_items(building, wall_report))
     items.append(
         CheckItem(
             "手続き",
-            "構造安全性",
+            "構造安全性（壁量計算以外）",
             "令46条ほか",
-            "壁量計算または構造計算",
+            "接合部（N値計算）・横架材・基礎・地盤の検討",
             "未検討",
             CHECK,
-            "本ツールは構造計算を行わない",
+            "本ツールは壁量計算のみを扱う",
         )
     )
     items.append(

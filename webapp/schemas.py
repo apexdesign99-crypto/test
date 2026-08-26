@@ -113,6 +113,10 @@ class OptionsIn(BaseModel):
     grade: str = Field(default="標準")
     floor_height_m: float = Field(default=2.9, ge=2.2, le=5.0)
     ceiling_height_m: float = Field(default=2.4, ge=1.8, le=4.0)
+    roof_weight: str = Field(default="軽い", description="壁量計算に使う屋根の重さ")
+    seismic_table_verified: bool = Field(
+        default=False, description="必要壁量の係数表が現行の告示値であることを確認済みか"
+    )
     target_floor_area_m2: Optional[float] = Field(default=None, gt=0, le=3000)
     market_unit_price_per_tsubo: Optional[int] = Field(default=None, ge=0)
 
@@ -121,6 +125,13 @@ class OptionsIn(BaseModel):
     def _check_structure(cls, value: str) -> str:
         if value not in {s.value for s in Structure}:
             raise ValueError(f"未知の構造: {value}")
+        return value
+
+    @field_validator("roof_weight")
+    @classmethod
+    def _check_roof_weight(cls, value: str) -> str:
+        if value not in ("軽い", "重い"):
+            raise ValueError("屋根の重さは「軽い」か「重い」で指定してください")
         return value
 
     @field_validator("grade")
@@ -141,6 +152,8 @@ class OptionsIn(BaseModel):
             grade=self.grade,
             floor_height_m=self.floor_height_m,
             ceiling_height_m=self.ceiling_height_m,
+            roof_weight=self.roof_weight,
+            seismic_table_verified=self.seismic_table_verified,
             target_floor_area_m2=self.target_floor_area_m2,
             market_unit_price_per_tsubo=self.market_unit_price_per_tsubo,
             land_price_jpy=land_price_jpy,

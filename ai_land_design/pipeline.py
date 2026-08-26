@@ -33,11 +33,14 @@ from . import drawings as drawings_module
 from . import exterior as exterior_module
 from . import feasibility as feasibility_module
 from . import layout as layout_module
+from . import structure as structure_module
 from .application import ApplicationInfo
 from .bim import to_ifc
 from .compliance import ComplianceReport
+from .structure import TABLE_LEGACY, WallQuantityReport, confirm_table
 from .models import (
     Building,
+    Structure,
     CostBreakdown,
     Diagnosis,
     Envelope,
@@ -60,6 +63,8 @@ class Options:
     land_price_jpy: Optional[int] = None
     project_name: str = "AI LAND DESIGN"
     ceiling_height_m: float = 2.4
+    roof_weight: str = "軽い"  # 壁量計算に使う屋根の重さ（軽い / 重い）
+    seismic_table_verified: bool = False  # 係数表が現行の告示値だと確認済みか
     application: ApplicationInfo = field(default_factory=ApplicationInfo)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -73,6 +78,8 @@ class Options:
             "land_price_jpy": self.land_price_jpy,
             "project_name": self.project_name,
             "ceiling_height_m": self.ceiling_height_m,
+            "roof_weight": self.roof_weight,
+            "seismic_table_verified": self.seismic_table_verified,
             "application": self.application.to_dict(),
         }
 
@@ -89,6 +96,7 @@ class ProjectResult:
     cost: Optional[CostBreakdown]
     compliance: List[Finding] = field(default_factory=list)
     code_check: Optional[ComplianceReport] = None
+    wall_quantity: Optional[WallQuantityReport] = None
 
     @property
     def blocked(self) -> bool:
@@ -104,6 +112,7 @@ class ProjectResult:
             "cost": self.cost.to_dict() if self.cost else None,
             "compliance": [f.to_dict() for f in self.compliance],
             "code_check": self.code_check.to_dict() if self.code_check else None,
+            "wall_quantity": self.wall_quantity.to_dict() if self.wall_quantity else None,
         }
         if self.building and self.cost:
             data["summary"] = {
@@ -165,7 +174,15 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         land_price_jpy=options.land_price_jpy,
     )
     compliance = documents_module.compliance_check(envelope, building)
-    code_check = compliance_module.evaluate(site, envelope, building)
+
+    # 壁量計算（木造のみ）
+    wall_quantity: Optional[WallQuantityReport] = None
+    if building.structure is Structure.WOOD and building.floors:
+        table = confirm_table(TABLE_LEGACY) if options.seismic_table_verified else TABLE_LEGACY
+        wall_quantity = structure_module.evaluate(
+            building, roof_weight=options.roof_weight, table=table
+        )
+    code_check = compliance_module.evaluate(site, envelope, building, wall_quantity)
 
     return ProjectResult(
         site=site,
@@ -176,6 +193,7 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         cost=breakdown,
         compliance=compliance,
         code_check=code_check,
+        wall_quantity=wall_quantity,
     )
 
 
@@ -296,6 +314,30 @@ def to_markdown(result: ProjectResult) -> str:
         "## 6. 適合チェック",
         "",
     ]
+    if result.wall_quantity:
+        report = result.wall_quantity
+        lines += [
+            f"### 壁量計算（{report.table.name}・{report.roof_weight}屋根）",
+            "",
+            f"壁量: **{'充足' if report.quantity_ok else '不足'}**（最小充足率 {report.worst_ratio:.2f}）"
+            f" ／ 配置バランス: **{'適合' if report.balance_ok else '不適合'}**"
+            + ("" if report.verified else "　※係数表の確認が必要"),
+            "",
+            "| 階 | 方向 | 必要壁量 | 存在壁量 | 充足率 | 壁率比 |",
+            "| --- | :-: | ---: | ---: | ---: | ---: |",
+        ]
+        for floor in report.floors:
+            for direction in floor.directions:
+                balance = (
+                    f"{direction.quarter_ratio:.2f}"
+                    if direction.quarter_ratio is not None
+                    else "—"
+                )
+                lines.append(
+                    f"| {floor.storey}階 | {direction.axis} | {direction.required_cm:.0f} cm | "
+                    f"{direction.existing_cm:.0f} cm | {direction.ratio:.2f} | {balance} |"
+                )
+        lines.append("")
     for finding in result.compliance:
         mark = {"info": "OK", "warn": "注意", "block": "NG"}[finding.level]
         lines.append(f"- **{mark}** {finding.message}")
@@ -337,6 +379,11 @@ def application_package(result: ProjectResult) -> Dict[str, str]:
     files["申請書_記載事項.html"] = application_module.to_html(
         site, envelope, building, info, result.code_check, drawings
     )
+    if result.wall_quantity:
+        files["壁量計算書.md"] = structure_module.to_markdown(result.wall_quantity)
+        files["壁量計算.json"] = json.dumps(
+            result.wall_quantity.to_dict(), ensure_ascii=False, indent=2
+        )
     if result.code_check:
         files["法適合チェック.md"] = compliance_module.to_markdown(result.code_check)
         files["法適合チェック.json"] = json.dumps(

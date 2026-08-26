@@ -234,6 +234,8 @@ function collectPayload() {
       grade: form.grade.value,
       floor_height_m: Number(form.floor_height_m.value) || 2.9,
       ceiling_height_m: Number(form.ceiling_height_m.value) || 2.4,
+      roof_weight: form.roof_weight.value,
+      seismic_table_verified: form.seismic_table_verified.checked,
       target_floor_area_m2: numberOrNull(form.target_floor_area_m2.value),
       market_unit_price_per_tsubo: numberOrNull(form.market_unit_price_per_tsubo.value),
     },
@@ -425,6 +427,7 @@ function render(data) {
   renderEnvelope(data);
   renderCodeCheck(data);
   renderPlan(data);
+  renderStructure(data);
   renderDrawings(data);
   renderCost(data);
   renderExports(data);
@@ -541,6 +544,66 @@ function renderCodeCheck(data) {
         </tbody>
       </table>
     </div>`;
+}
+
+function renderStructure(data) {
+  const card = document.getElementById("structure-card");
+  const report = data.wall_quantity;
+  if (!report) {
+    card.innerHTML = "";
+    return;
+  }
+  const axisLabel = { X: "桁行方向（東西）", Y: "張り間方向（南北）" };
+  const banner = report.ok
+    ? '<div class="banner ok">壁量・配置ともに満たしています</div>'
+    : `<div class="banner ng">${
+        !report.quantity_ok ? "壁量が不足しています" : "耐力壁の配置が一方に偏っています（四分割法 不適合）"
+      }</div>`;
+
+  card.innerHTML = `
+    <h2 class="card-title">3''. 壁量計算（令46条4項）</h2>
+    ${banner}
+    <div class="metrics">
+      ${metric("壁量", report.quantity_ok ? "充足" : "不足", `最小充足率 ${fmtNum(report.worst_ratio, 2)}`)}
+      ${metric(
+        "配置バランス",
+        report.balance_ok ? "適合" : "不適合",
+        report.worst_balance !== null ? `最小壁率比 ${fmtNum(report.worst_balance, 2)}` : ""
+      )}
+      ${metric("屋根", `${escapeHtml(report.roof_weight)}屋根`)}
+      ${metric("壁倍率の仮定", `外壁 ${report.magnifications["外壁"]} / 内壁 ${report.magnifications["間仕切壁"]}`)}
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>階</th><th>方向</th><th class="num">必要壁量</th><th>決定要因</th>
+          <th class="num">存在壁量</th><th class="num">充足率</th><th class="num">壁率比</th><th>判定</th></tr></thead>
+        <tbody>
+          ${report.floors
+            .flatMap((floor) =>
+              floor.directions.map((d) => {
+                const ok = d.ok && d.balance_ok;
+                return `<tr class="check-${ok ? "適合" : "不適合"}"><td>${floor.storey}階</td>` +
+                  `<td>${axisLabel[d.axis]}</td><td class="num">${d.required_cm} cm</td>` +
+                  `<td>${escapeHtml(d.governing)}</td><td class="num">${d.existing_cm} cm</td>` +
+                  `<td class="num">${fmtNum(d.ratio, 2)}</td>` +
+                  `<td class="num">${d.quarter_ratio === null ? "—" : fmtNum(d.quarter_ratio, 2)}</td>` +
+                  `<td>${ok ? "○" : "×"}</td></tr>`;
+              })
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+    ${
+      report.verified
+        ? ""
+        : `<p class="hint warn-text">係数表（${escapeHtml(report.table.name)}／適用 ${escapeHtml(
+            report.table.effective
+          )}）が現行の告示値であることを未確認のため、判定は「要確認」として扱っています。${escapeHtml(
+            report.table.note
+          )}</p>`
+    }
+    <p class="hint">耐力壁は外周壁と 0.91m 以上の間仕切壁を仮定した概算です。実際の配置・仕様は伏図で確定してください。</p>`;
 }
 
 function renderDrawings(data) {
@@ -688,6 +751,7 @@ function renderExports(data) {
     { fmt: "application-html", label: "確認申請 記載事項＋図面 (.html)", needsBuilding: true },
     { fmt: "ifc", label: "BIM モデル (.ifc)", needsBuilding: true },
     { fmt: "compliance-md", label: "法適合チェック (.md)", needsBuilding: true },
+    ...(data.wall_quantity ? [{ fmt: "structure-md", label: "壁量計算書 (.md)", needsBuilding: true }] : []),
     { fmt: "site-plan-svg", label: "配置図 (.svg)", needsBuilding: true },
     ...plans.map((p) => ({
       fmt: "plan-svg", storey: p.storey, label: `${p.storey}階 平面図 (.svg)`, needsBuilding: true,
@@ -721,6 +785,7 @@ function renderExports(data) {
     </details>
     ${detailsBlock("確認申請 記載事項（第一面〜第五面）", data.application_markdown)}
     ${detailsBlock("法適合チェック", data.compliance_markdown)}
+    ${detailsBlock("壁量計算書", data.structure_markdown)}
     ${detailsBlock("設計図書チェックリスト", data.permit_markdown)}`;
 
   document.querySelectorAll(".export-btn").forEach((btn) => {

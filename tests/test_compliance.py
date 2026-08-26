@@ -118,8 +118,37 @@ class ComplianceTest(unittest.TestCase):
         self.assertTrue(any(i.name == "日影規制" and i.result == CHECK for i in report.items))
 
     def test_structural_and_energy_are_out_of_scope(self):
-        for name in ("構造安全性", "省エネ基準適合"):
+        for name in ("構造安全性（壁量計算以外）", "省エネ基準適合"):
             self.assertEqual(self._item(name).result, CHECK)
+
+    def test_wall_quantity_items_appear_when_a_report_is_given(self):
+        from ai_land_design import structure
+
+        report = structure.evaluate(self.building)
+        checked = compliance.evaluate(self.site, self.envelope, self.building, report)
+        names = [i.name for i in checked.items]
+        self.assertTrue(any("壁量" in name for name in names))
+        self.assertTrue(any("壁の配置" in name for name in names))
+
+    def test_wall_quantity_is_unverified_until_the_table_is_confirmed(self):
+        from ai_land_design import structure
+
+        report = structure.evaluate(self.building)
+        checked = compliance.evaluate(self.site, self.envelope, self.building, report)
+        item = next(i for i in checked.items if "壁量" in i.name)
+        self.assertEqual(item.result, CHECK)
+
+        confirmed = structure.evaluate(self.building, table=structure.confirm_table(structure.TABLE_LEGACY))
+        checked = compliance.evaluate(self.site, self.envelope, self.building, confirmed)
+        item = next(i for i in checked.items if "壁量" in i.name)
+        self.assertEqual(item.result, PASS)
+
+    def test_non_wood_structure_is_out_of_scope_for_wall_quantity(self):
+        self.building.structure = Structure.RC
+        items = compliance.wall_quantity_items(self.building, None)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].result, CHECK)
+        self.assertIn("木造軸組構法のみ", items[0].actual)
 
     def test_markdown_lists_failures_first(self):
         site = make_site(frontage=1.5)

@@ -448,6 +448,9 @@ def _facade_span(room: Room, facade: Direction) -> Tuple[float, float]:
 
 #: 採光に有利な方位の優先順
 _FACADE_PRIORITY = {Direction.S: 0, Direction.E: 1, Direction.W: 2, Direction.N: 3}
+#: 1 室が面する外壁のうち、開口部に使える割合の上限
+#: （耐力壁を残すための構造上の目安。採光に必要な幅がこれを超える場合は採光を優先する）
+MAX_OPENING_RATIO = 0.5
 
 
 def place_openings(
@@ -485,7 +488,11 @@ def place_openings(
             required = room.area_m2 / 7.0 * 1.2
             height = 2.0 if (room.name == "LDK" and facade is Direction.S) else 1.2
             kind = "掃出窓" if height >= 2.0 else "窓"
-            width = min(usable, max(1.2, required / height))
+            # 耐力壁を残すため開口は壁長の半分までを目安とし、
+            # 採光に必要な幅がそれを超える場合だけ上限を緩める
+            structural_cap = length * MAX_OPENING_RATIO
+            daylight_width = required / height
+            width = min(usable, max(1.2, min(daylight_width, max(structural_cap, daylight_width * 0.85))))
             openings.append(
                 Opening(kind, room.name, floor.storey, facade,
                         start + (length - width) / 2, width, height,

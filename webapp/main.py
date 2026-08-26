@@ -24,6 +24,7 @@ from ai_land_design import (
     compliance as compliance_module,
     drawings as drawings_module,
     exterior,
+    structure as structure_module,
     layout,
     pipeline,
 )
@@ -387,6 +388,8 @@ def analyze(request: AnalyzeRequest) -> JSONResponse:
         )
         if result.code_check:
             payload["compliance_markdown"] = compliance_module.to_markdown(result.code_check)
+        if result.wall_quantity:
+            payload["structure_markdown"] = structure_module.to_markdown(result.wall_quantity)
     return JSONResponse(payload)
 
 
@@ -428,6 +431,7 @@ EXPORT_FORMATS = {
     "application-html": ("application.html", "text/html; charset=utf-8"),
     "application-md": ("application.md", MARKDOWN),
     "compliance-md": ("compliance.md", MARKDOWN),
+    "structure-md": ("wall_quantity.md", MARKDOWN),
     "compliance-json": ("compliance.json", "application/json"),
 }
 
@@ -492,6 +496,12 @@ def export(
             if result.code_check is None:
                 raise HTTPException(status_code=409, detail="法適合チェックがありません")
             body = compliance_module.to_markdown(result.code_check)
+        elif fmt == "structure-md":
+            if result.wall_quantity is None:
+                raise HTTPException(
+                    status_code=409, detail="壁量計算は木造の計画でのみ出力できます"
+                )
+            body = structure_module.to_markdown(result.wall_quantity)
         elif fmt == "compliance-json":
             if result.code_check is None:
                 raise HTTPException(status_code=409, detail="法適合チェックがありません")

@@ -110,10 +110,19 @@
         <label class="field"><span>グレード</span><select name="grade" id="grade"></select></label>
       </div>
       <div class="grid-2">
+        <label class="field"><span>屋根の重さ（壁量計算）</span>
+          <select name="roof_weight">
+            <option value="軽い">軽い（金属板・スレート）</option>
+            <option value="重い">重い（瓦）</option>
+          </select>
+        </label>
         <label class="field"><span>天井高 (m)</span><input type="number" name="ceiling_height_m" value="2.4" step="any" min="1.8" max="4"></label>
-        <label class="field"><span>目標延床 (m²)</span><input type="number" name="target_floor_area_m2" placeholder="自動" step="any" min="20"></label>
+      </div>
+      <div class="checks" style="margin-bottom:10px">
+        <label><input type="checkbox" name="seismic_table_verified"> 必要壁量の係数表が現行の告示値であることを確認した</label>
       </div>
       <div class="grid-2">
+        <label class="field"><span>目標延床 (m²)</span><input type="number" name="target_floor_area_m2" placeholder="自動" step="any" min="20"></label>
         <label class="field">
           <span>相場坪単価 (円) <button type="button" class="ghost" id="fetch-market">周辺相場から取得</button></span>
           <input type="number" name="market_unit_price_per_tsubo" placeholder="任意" step="any" min="0">
@@ -166,6 +175,7 @@
       <section class="panel" id="envelope-card"></section>
       <section class="panel" id="code-card"></section>
       <section class="panel" id="plan-card"></section>
+      <section class="panel" id="structure-card"></section>
       <section class="panel" id="drawing-card"></section>
       <section class="panel" id="cost-card"></section>
       <section class="panel" id="export-card"></section>

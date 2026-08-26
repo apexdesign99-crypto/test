@@ -217,3 +217,5 @@ ul.notice li { margin-bottom: 6px; }
 .settings-layout .findings li strong { color: var(--accent); }
 .settings-layout .findings li.block strong { color: var(--danger); }
 .hint.error { color: var(--danger); }
+
+.hint.warn-text { color: var(--warn); }
