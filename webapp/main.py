@@ -24,6 +24,7 @@ from ai_land_design import (
     compliance as compliance_module,
     drawings as drawings_module,
     exterior,
+    pdf_report as pdf_module,
     structure as structure_module,
     layout,
     pipeline,
@@ -32,6 +33,7 @@ from ai_land_design.bim import to_ifc
 from ai_land_design.cost import GRADE_FACTOR
 from ai_land_design.documents import to_markdown as permit_markdown
 from ai_land_design.models import Direction, FireZone, Site, Structure, UseDistrict
+from ai_land_design.pdfkit import FontError
 from ai_land_design.sources.gis import LocalGisProvider
 from ai_land_design.sources.http import ApiError, NetworkUnavailable
 from ai_land_design.sources.realestate import LocalRealEstateProvider
@@ -432,6 +434,7 @@ EXPORT_FORMATS = {
     "application-md": ("application.md", MARKDOWN),
     "compliance-md": ("compliance.md", MARKDOWN),
     "structure-md": ("wall_quantity.md", MARKDOWN),
+    "pdf": ("申請図書.pdf", "application/pdf"),
     "compliance-json": ("compliance.json", "application/json"),
 }
 
@@ -450,6 +453,21 @@ def export(
         )
     result = _run(request)
     filename, media_type = EXPORT_FORMATS[fmt]
+
+    if fmt == "pdf":
+        try:
+            body = pdf_module.build(result)
+        except FontError as error:
+            raise HTTPException(
+                status_code=503,
+                detail=f"PDF を生成できません: {error}",
+            ) from error
+        prefix = result.site.site_id or "site"
+        return Response(
+            content=body,
+            media_type="application/pdf",
+            headers={"Content-Disposition": content_disposition(f"{prefix}_申請図書.pdf")},
+        )
 
     if fmt == "report-md":
         body = pipeline.to_markdown(result)

@@ -748,6 +748,7 @@ function renderExports(data) {
   const elevations = data.drawings?.elevations || [];
   const buttons = [
     { fmt: "package", label: "★ 申請パッケージ一式 (.zip)", needsBuilding: true, primary: true },
+    { fmt: "pdf", label: "★ 申請図書 (.pdf)", needsBuilding: true, primary: true },
     { fmt: "application-html", label: "確認申請 記載事項＋図面 (.html)", needsBuilding: true },
     { fmt: "ifc", label: "BIM モデル (.ifc)", needsBuilding: true },
     { fmt: "compliance-md", label: "法適合チェック (.md)", needsBuilding: true },

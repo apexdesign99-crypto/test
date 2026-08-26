@@ -33,10 +33,12 @@ from . import drawings as drawings_module
 from . import exterior as exterior_module
 from . import feasibility as feasibility_module
 from . import layout as layout_module
+from . import pdf_report as pdf_module
 from . import structure as structure_module
 from .application import ApplicationInfo
 from .bim import to_ifc
 from .compliance import ComplianceReport
+from .pdfkit import FontError
 from .structure import TABLE_LEGACY, WallQuantityReport, confirm_table
 from .models import (
     Building,
@@ -352,13 +354,14 @@ def to_markdown(result: ProjectResult) -> str:
     return "\n".join(lines)
 
 
-def application_package(result: ProjectResult) -> Dict[str, str]:
+def application_package(result: ProjectResult, include_pdf: bool = True) -> Dict[str, Any]:
     """確認申請用の成果物一式（ファイル名 → 内容）。
 
     図面（配置図・平面図・立面図4面・断面図・求積図）、IFC、申請書の記載事項、
     法適合チェック、事業性レポートをまとめて返す。ZIP 化や書き出しは呼び出し側で行う。
+    値は文字列（テキスト）か bytes（PDF）。
     """
-    files: Dict[str, str] = {"report.md": to_markdown(result)}
+    files: Dict[str, Any] = {"report.md": to_markdown(result)}
     files["report.json"] = json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
     if not (result.building and result.building.floors):
         return files
@@ -390,17 +393,30 @@ def application_package(result: ProjectResult) -> Dict[str, str]:
             result.code_check.to_dict(), ensure_ascii=False, indent=2
         )
     files["確認申請_図書チェックリスト.md"] = documents_module.to_markdown(site, envelope, building)
+
+    if include_pdf:
+        try:
+            files["申請図書.pdf"] = pdf_module.build(result)
+        except FontError as error:
+            # 日本語フォントが無い環境では PDF を諦め、理由を残す
+            files["申請図書_PDFを作成できませんでした.txt"] = (
+                f"{error}\n\n日本語フォント（IPAゴシック等）をインストールするか、"
+                "pdf_report.build(result, font_path=...) でフォントを指定してください。\n"
+            )
     return files
 
 
 def write_outputs(result: ProjectResult, out_dir: str | Path) -> List[Path]:
-    """申請パッケージ（図面・IFC・申請書・チェック・レポート）を書き出す。"""
+    """申請パッケージ（図面・IFC・申請書・チェック・PDF・レポート）を書き出す。"""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
     for name, content in application_package(result).items():
         path = out / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding="utf-8")
         written.append(path)
     return written

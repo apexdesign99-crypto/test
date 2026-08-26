@@ -37,8 +37,8 @@ def _scale_for(width_m: float, height_m: float, max_px: float = 900.0) -> float:
     return max(12.0, min(46.0, max_px / (span + 4)))
 
 
-def site_plan_svg(site: Site, building: Building, envelope: Envelope) -> str:
-    """配置図。"""
+def site_plan_canvas(site: Site, building: Building, envelope: Envelope) -> Canvas:
+    """配置図の Canvas。"""
     sx0, sy0, sx1, sy1 = bbox(site.polygon)
     canvas = Canvas(
         sx0 - 3, sy0 - 3, sx1 + 3, sy1 + 3,
@@ -124,7 +124,12 @@ def site_plan_svg(site: Site, building: Building, envelope: Envelope) -> str:
             ("用途地域", site.zoning.use_district.value),
         ],
     )
-    return canvas.render()
+    return canvas
+
+
+def site_plan_svg(site: Site, building: Building, envelope: Envelope) -> str:
+    """配置図（SVG）。"""
+    return site_plan_canvas(site, building, envelope).render()
 
 
 def _facade_geometry(building: Building, facade: Direction) -> Tuple[float, float, float]:
@@ -137,8 +142,8 @@ def _facade_geometry(building: Building, facade: Direction) -> Tuple[float, floa
     return width, depth, eaves
 
 
-def elevation_svg(site: Site, building: Building, facade: Direction) -> str:
-    """立面図（1面）。屋根・開口部・高さ寸法・道路斜線を描く。"""
+def elevation_canvas(site: Site, building: Building, facade: Direction) -> Canvas:
+    """立面図（1面）の Canvas。屋根・開口部・高さ寸法・道路斜線を描く。"""
     if not building.floors:
         raise ValueError("建物が生成されていない")
 
@@ -238,7 +243,12 @@ def elevation_svg(site: Site, building: Building, facade: Direction) -> str:
                             f"道路斜線制限 {road_limit.limit_m:.2f}m（最高の高さ "
                             f"{ridge:.2f}m ／ 余裕 {road_limit.limit_m - ridge:.2f}m）",
                             9, "middle", "#b03a2e")
-    return canvas.render()
+    return canvas
+
+
+def elevation_svg(site: Site, building: Building, facade: Direction) -> str:
+    """立面図（SVG）。"""
+    return elevation_canvas(site, building, facade).render()
 
 
 def all_elevations_svg(site: Site, building: Building) -> Dict[str, str]:
@@ -247,8 +257,8 @@ def all_elevations_svg(site: Site, building: Building) -> Dict[str, str]:
             (Direction.S, Direction.E, Direction.N, Direction.W)}
 
 
-def section_svg(site: Site, building: Building) -> str:
-    """断面図（南北方向）。階高・天井高・軒高・最高の高さを示す。"""
+def section_canvas(site: Site, building: Building) -> Canvas:
+    """断面図（南北方向）の Canvas。階高・天井高・軒高・最高の高さを示す。"""
     if not building.floors:
         raise ValueError("建物が生成されていない")
     footprint = building.floors[0].footprint
@@ -291,7 +301,12 @@ def section_svg(site: Site, building: Building) -> str:
     canvas.dim_v(0, eaves, depth + 1.2, f"軒高 {eaves * 1000:.0f}")
     canvas.dim_v(0, ridge, depth + 2.6, f"最高の高さ {ridge * 1000:.0f}")
     canvas.dim_h(0, depth, -1.1, f"{depth * 1000:.0f}")
-    return canvas.render()
+    return canvas
+
+
+def section_svg(site: Site, building: Building) -> str:
+    """断面図（SVG）。"""
+    return section_canvas(site, building).render()
 
 
 def _triangulate(polygon: Sequence[Point]) -> List[Tuple[Point, Point, Point]]:
@@ -305,8 +320,8 @@ def _triangle_area(triangle: Tuple[Point, Point, Point]) -> float:
     return abs((x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1)) / 2
 
 
-def area_calculation_svg(site: Site, building: Building) -> str:
-    """求積図。敷地は三角形分割、各階床面積は矩形の寸法から求積する。"""
+def area_calculation_canvas(site: Site, building: Building) -> Canvas:
+    """求積図の Canvas。敷地は三角形分割、各階床面積は矩形の寸法から求積する。"""
     sx0, sy0, sx1, sy1 = bbox(site.polygon)
     canvas = Canvas(
         sx0 - 1.5, sy0 - 2.5, sx1 + 8.0, sy1 + 1.5,
@@ -350,7 +365,29 @@ def area_calculation_svg(site: Site, building: Building) -> str:
 
     canvas.table(canvas.width_px - 300, 60, rows, width_px=290)
     canvas.north_arrow((sx1 + 1.2, sy1 - 0.5))
-    return canvas.render()
+    return canvas
+
+
+def area_calculation_svg(site: Site, building: Building) -> str:
+    """求積図（SVG）。"""
+    return area_calculation_canvas(site, building).render()
+
+
+def all_canvases(site: Site, building: Building, envelope: Envelope) -> Dict[str, Canvas]:
+    """申請図書に使う図面一式を Canvas で返す（PDF 出力に使う）。"""
+    from . import exterior, layout
+
+    canvases: Dict[str, Canvas] = {"配置図": site_plan_canvas(site, building, envelope)}
+    if not building.floors:
+        return canvases
+    for floor in building.floors:
+        canvases[f"{floor.storey}階 平面図"] = layout.plan_canvas(site, building, floor.storey)
+    for facade in (Direction.S, Direction.E, Direction.N, Direction.W):
+        canvases[f"{facade.value}立面図"] = elevation_canvas(site, building, facade)
+    canvases["断面図"] = section_canvas(site, building)
+    canvases["求積図"] = area_calculation_canvas(site, building)
+    canvases["外観イメージ"] = exterior.massing_canvas(building)
+    return canvases
 
 
 def all_drawings(site: Site, building: Building, envelope: Envelope) -> Dict[str, str]:

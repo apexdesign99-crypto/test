@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Sequence, Tuple
 
 from .geometry import Point, Polygon, bbox, centroid
+from .svgkit import Canvas
 from .models import Building
 
 Vertex = Tuple[float, float, float]
@@ -104,37 +105,42 @@ def total_height_m(building: Building, roof_pitch: float = 0.4) -> float:
     return z + 0.3
 
 
-def to_svg(building: Building, scale: float = 14.0, roof_pitch: float = 0.4) -> str:
-    """アイソメ図（斜投影）の SVG。外観ボリュームの確認用。"""
+def massing_canvas(
+    building: Building, scale: float = 14.0, roof_pitch: float = 0.4
+) -> Canvas:
+    """アイソメ図（斜投影）を `Canvas` として組み立てる（SVG / PDF 共通）。"""
     mesh = build_massing(building, roof_pitch)
-    if not mesh.vertices:
-        return '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>'
-
     cos30, sin30 = math.cos(math.radians(30)), math.sin(math.radians(30))
 
-    def project(v: Vertex) -> Tuple[float, float]:
-        x, y, z = v
-        return ((x - y) * cos30, (x + y) * sin30 - z)
+    def project(vertex: Vertex) -> Tuple[float, float]:
+        x, y, z = vertex
+        # Canvas は y 上向きなので、高さ方向をそのまま上に取る
+        return ((x - y) * cos30, z - (x + y) * sin30)
 
-    pts = [project(v) for v in mesh.vertices]
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    margin = 2.0
-    width = (max(xs) - min(xs) + margin * 2) * scale
-    height = (max(ys) - min(ys) + margin * 2) * scale
+    if not mesh.vertices:
+        return Canvas(0, 0, 1, 1, scale=scale, margin_m=0.5, title="外観イメージ")
 
-    def px(p: Tuple[float, float]) -> Tuple[float, float]:
-        return ((p[0] - min(xs) + margin) * scale, (p[1] - min(ys) + margin) * scale)
+    points = [project(v) for v in mesh.vertices]
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    canvas = Canvas(
+        min(xs), min(ys), max(xs), max(ys),
+        scale=scale,
+        margin_m=1.5,
+        title=f"外観イメージ　{building.structure.value} {building.storeys}階建 / "
+              f"最高高さ {total_height_m(building, roof_pitch):.2f}m",
+        subtitle="自動生成（ボリューム確認用）",
+    )
 
     palette = {"屋根": "#8c5a3c", "妻壁": "#d8cfc0", "階": "#efe9dd"}
 
     def color_for(group: str) -> str:
         for key, value in palette.items():
-            if group.startswith(key) or key in group:
+            if key in group:
                 return value
         return "#e5e0d6"
 
-    # 奥のものから描くため、面の重心の奥行き（x+y）でソートする。
+    # 奥のものから描くため、面の重心の奥行き（x+y）でソートする
     order: List[Tuple[float, int, str]] = []
     for group, face_ids in mesh.groups.items():
         if group.endswith("_底"):
@@ -145,24 +151,14 @@ def to_svg(building: Building, scale: float = 14.0, roof_pitch: float = 0.4) -> 
             order.append((depth, fid, group))
     order.sort(key=lambda t: t[0])
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
-        f'viewBox="0 0 {width:.0f} {height:.0f}">',
-        '<rect width="100%" height="100%" fill="#ffffff"/>',
-    ]
     for _, fid, group in order:
         face = mesh.faces[fid]
-        pointstr = " ".join(
-            f"{x:.1f},{y:.1f}" for x, y in (px(pts[i - 1]) for i in face)
+        canvas.polygon(
+            [points[i - 1] for i in face], fill=color_for(group), stroke="#3a3a3a", width=1.0
         )
-        parts.append(
-            f'<polygon points="{pointstr}" fill="{color_for(group)}" stroke="#3a3a3a" '
-            'stroke-width="1" stroke-linejoin="round"/>'
-        )
-    parts.append(
-        f'<text x="8" y="18" font-size="13" font-family="sans-serif" fill="#111111">'
-        f'外観イメージ　{building.structure.value} {building.storeys}階建 / '
-        f'最高高さ {total_height_m(building, roof_pitch):.2f}m</text>'
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+    return canvas
+
+
+def to_svg(building: Building, scale: float = 14.0, roof_pitch: float = 0.4) -> str:
+    """アイソメ図（斜投影）の SVG。外観ボリュームの確認用。"""
+    return massing_canvas(building, scale, roof_pitch).render()

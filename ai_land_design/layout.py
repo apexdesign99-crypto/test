@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .geometry import Point, Polygon, bbox, rectangle
+from .svgkit import ACCENT, MEDIUM, THICK, Canvas
 from .models import (
     Building,
     Direction,
@@ -663,73 +664,61 @@ def _fit_label(name: str, width_px: float, font_px: float) -> str:
     return name[: max(1, max_chars - 1)] + "…"
 
 
-def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0) -> str:
-    """指定階の平面図を SVG 文字列で返す（1m = `scale` px）。開口部も描画する。"""
+def plan_canvas(site: Site, building: Building, storey: int = 1, scale: float = 26.0) -> Canvas:
+    """指定階の平面図を `Canvas` として組み立てる（SVG / PDF 共通）。
+
+    室の寸法に応じて文字サイズを落とし、面積表記の省略と室名の切り詰めを行う。
+    完全な室名は SVG のツールチップに残す。
+    """
     floor = next((f for f in building.floors if f.storey == storey), None)
     if floor is None:
         raise ValueError(f"{storey}階は存在しない")
 
     min_x, min_y, max_x, max_y = bbox(site.polygon)
-    margin = 1.5
-    width = (max_x - min_x + margin * 2) * scale
-    height = (max_y - min_y + margin * 2) * scale
-
-    def px(p: Point) -> Tuple[float, float]:
-        return ((p[0] - min_x + margin) * scale, (max_y - p[1] + margin) * scale)
-
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
-        f'viewBox="0 0 {width:.0f} {height:.0f}">',
-        '<rect width="100%" height="100%" fill="#ffffff"/>',
-    ]
-    site_pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in (px(p) for p in site.polygon))
-    parts.append(
-        f'<polygon points="{site_pts}" fill="#f4f1ea" stroke="#8a8577" stroke-width="1.5" '
-        'stroke-dasharray="6 4"/>'
+    canvas = Canvas(
+        min_x, min_y, max_x, max_y,
+        scale=scale,
+        margin_m=1.5,
+        title=f"{storey}階 平面図　{floor.area_m2:.1f}m² （{building.ldk_type}）　S=1:100 相当",
+        subtitle="自動生成（確認申請用の下書き）／建築士による確認が必要",
     )
+    canvas.polygon(site.polygon, fill="#f4f1ea", stroke="#8a8577", width=MEDIUM, dash="6 4")
 
     for room in floor.rooms:
-        rx, ry = px((room.x, room.y + room.h))
+        canvas.rect(room.x, room.y, room.w, room.h, fill="#ffffff", stroke="#333333", width=THICK)
         w_px, h_px = room.w * scale, room.h * scale
-        parts.append(
-            f'<rect x="{rx:.1f}" y="{ry:.1f}" width="{w_px:.1f}" height="{h_px:.1f}" '
-            f'fill="#ffffff" stroke="#333333" stroke-width="2"/>'
-        )
-        cx, cy = px((room.x + room.w / 2, room.y + room.h / 2))
         font = max(7.0, min(12.0, min(w_px, h_px) / 5.5))
         show_area = h_px >= font * 3.2 and w_px >= font * 5
-        label = _fit_label(room.name, w_px - 4, font)
-        parts.append(
-            f'<text x="{cx:.1f}" y="{cy - 4 if show_area else cy + font / 3:.1f}" '
-            f'font-size="{font:.1f}" text-anchor="middle" font-family="sans-serif" '
-            f'fill="#222222">{label}<title>{room.name} {room.jo:.1f}帖 / {room.area_m2:.1f}m²</title></text>'
+        center = (room.x + room.w / 2, room.y + room.h / 2)
+        canvas.text(
+            center, _fit_label(room.name, w_px - 4, font), font, "middle", "#222222",
+            dy=-4 if show_area else font / 3,
+            title=f"{room.name} {room.jo:.1f}帖 / {room.area_m2:.1f}m²",
         )
         if show_area:
-            parts.append(
-                f'<text x="{cx:.1f}" y="{cy + font:.1f}" font-size="{font * 0.8:.1f}" '
-                f'text-anchor="middle" font-family="sans-serif" fill="#666666">'
-                f'{room.jo:.1f}帖 / {room.area_m2:.1f}m²</text>'
+            canvas.text(
+                center, f"{room.jo:.1f}帖 / {room.area_m2:.1f}m²", font * 0.8, "middle",
+                "#666666", dy=font,
             )
 
     # 開口部（外壁線上に太線で表現）
     fx0, fy0, fx1, fy1 = bbox(floor.footprint)
     for opening in floor.openings:
-        color = "#2f6f4f" if opening.kind == "玄関ドア" else "#4f7f9c"
+        color = ACCENT if opening.kind == "玄関ドア" else "#4f7f9c"
         if opening.facade in (Direction.S, Direction.N):
             y = fy0 if opening.facade is Direction.S else fy1
-            a, b = px((opening.position, y)), px((opening.position + opening.width, y))
+            a, b = (opening.position, y), (opening.position + opening.width, y)
         else:
             x = fx0 if opening.facade is Direction.W else fx1
-            a, b = px((x, opening.position)), px((x, opening.position + opening.width))
-        parts.append(
-            f'<line x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{b[0]:.1f}" y2="{b[1]:.1f}" '
-            f'stroke="{color}" stroke-width="5" stroke-linecap="butt">'
-            f'<title>{opening.kind} {opening.room} W{opening.width * 1000:.0f}×H{opening.height * 1000:.0f}</title></line>'
+            a, b = (x, opening.position), (x, opening.position + opening.width)
+        canvas.line(
+            a, b, 5, color,
+            title=f"{opening.kind} {opening.room} "
+                  f"W{opening.width * 1000:.0f}×H{opening.height * 1000:.0f}",
         )
+    return canvas
 
-    parts.append(
-        f'<text x="8" y="18" font-size="13" font-family="sans-serif" fill="#111111">'
-        f'{storey}階 平面図　{floor.area_m2:.1f}m² （{building.ldk_type}）　S=1:100 相当</text>'
-    )
-    parts.append("</svg>")
-    return "\n".join(parts)
+
+def to_svg(site: Site, building: Building, storey: int = 1, scale: float = 26.0) -> str:
+    """指定階の平面図を SVG 文字列で返す（1m = `scale` px）。開口部も描画する。"""
+    return plan_canvas(site, building, storey, scale).render()

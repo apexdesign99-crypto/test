@@ -14,6 +14,7 @@
 | 法適合チェック | 集団規定・単体規定を条文つきで自動判定 |
 | 確認申請 記載事項 | 第一面〜第五面のデータシート（印刷用 HTML / Markdown） |
 | 事業性レポート | 診断スコア・建築費・総事業費 |
+| **PDF** | 上記を 1 冊にまとめた申請図書（表紙・申請書・チェック・壁量計算・図面全ページ） |
 
 ```
                   AI LAND DESIGN
@@ -119,7 +120,7 @@ API ドキュメント（OpenAPI）は `/docs` で確認できる。
 | `POST /api/analyze` | 全工程を実行し、レポート・図面 SVG を含む結果を返す |
 | `POST /api/analyze` の応答 | 図面 SVG（配置図・平面図・立面図4面・断面図・求積図）と法適合チェックを含む |
 | `POST /api/package` | **申請パッケージ一式を ZIP で取得** |
-| `POST /api/export/{fmt}` | 個別ダウンロード（`ifc` / `site-plan-svg` / `plan-svg` / `elevation-svg?facade=南` / `section-svg` / `area-svg` / `application-html` / `application-md` / `compliance-md` / `compliance-json` / `structure-md` / `obj` / `report-md` / `report-json` / `permit-md`） |
+| `POST /api/export/{fmt}` | 個別ダウンロード（`ifc` / `site-plan-svg` / `plan-svg` / `elevation-svg?facade=南` / `section-svg` / `area-svg` / `application-html` / `application-md` / `compliance-md` / `compliance-json` / `structure-md` / **`pdf`** / `obj` / `report-md` / `report-json` / `permit-md`） |
 
 `POST /api/analyze` のリクエスト例:
 
@@ -179,6 +180,21 @@ result = run(site, Options(household_size=4, structure=Structure.WOOD, grade="�
 print(result.diagnosis.rank, result.cost.project_total_jpy)
 write_outputs(result, "out/")
 ```
+
+## PDF 出力
+
+申請図書一式を 1 つの PDF にまとめて出力する（画面の「申請図書 (.pdf)」、
+API は `POST /api/export/pdf`、ZIP パッケージにも同梱）。
+
+- **外部ライブラリなし**。PDF の組み立て・TrueType の解析・グリフのサブセット化を
+  `pdfkit.py` で行う
+- **日本語フォントを埋め込む**ので、受け取った側の環境にフォントが無くても表示できる。
+  6MB のフォントから使った字だけを取り出すため、15 ページで 130KB 程度に収まる
+- 図面は SVG と同じ `Canvas` からベクタで描くため、拡大しても劣化しない
+- ToUnicode CMap を持たせているので、本文の検索・コピーができる
+
+フォントは環境から自動で探す（IPAゴシック、Noto Sans CJK、ヒラギノ、メイリオなど）。
+見つからない場合は `pdf_report.build(result, font_path="/path/to/font.ttf")` で指定する。
 
 ## 確認申請に向けた作り込み
 
@@ -246,7 +262,8 @@ write_outputs(result, "out/")
 | BIM / IFC | `bim/ifc.py` | IFC4 の STEP ファイル生成（Storey / Slab / Wall / Space） |
 | 壁量計算 | `structure.py` | 必要壁量・存在壁量・四分割法（木造軸組構法） |
 | 法適合チェック | `compliance.py` | 集団規定・単体規定の自動判定（条文・要求値・実績値） |
-| 申請図面 | `drawings.py`, `svgkit.py` | 配置図・立面図4面・断面図・求積図 |
+| 申請図面 | `drawings.py`, `svgkit.py` | 配置図・立面図4面・断面図・求積図（SVG / PDF 共通の Canvas） |
+| PDF 出力 | `pdfkit.py`, `pdf_report.py` | フォント埋め込み・図面のベクタ描画・申請図書の組版 |
 | 確認申請書 | `application.py` | 第一面〜第五面の記載事項、印刷用 HTML |
 | 実施設計・確認申請 | `documents.py` | 申請概要、必要手続きの判定、設計図書チェックリスト |
 | パイプライン | `pipeline.py` | 上記の受け渡しとレポート生成 |
