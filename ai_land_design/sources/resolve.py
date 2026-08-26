@@ -176,6 +176,7 @@ class SiteResolver:
         if self.hazard is not None:
             try:
                 hazard, results = self.hazard.hazard_at(geo.lat, geo.lon)
+                failed = [r for r in results if not r.determined]
                 for result in results:
                     if result.hit:
                         record(
@@ -184,7 +185,18 @@ class SiteResolver:
                             self.hazard.source,
                             result.note,
                         )
-                record("ハザード判定", "実施済み", self.hazard.source, "タイル配色からの判定（目安）")
+                if failed:
+                    # 未取得を「危険なし」と誤解させないため、必ず警告として残す
+                    warnings.append(
+                        "ハザード情報を判定できなかったレイヤがあります（"
+                        + "、".join(f"{r.layer}: {r.note}" for r in failed)
+                        + "）。浸水深・土砂災害の値は未確認です。"
+                    )
+                if len(failed) < len(results):
+                    record(
+                        "ハザード判定", "実施済み", self.hazard.source,
+                        "タイル配色からの判定（目安）",
+                    )
             except (NetworkUnavailable, ApiError) as error:
                 warnings.append(f"ハザード情報を取得できませんでした（{error}）。")
         else:
@@ -317,6 +329,7 @@ def build_resolver(
     geocode_cache: Optional[str] = None,
     geocode_table: Optional[str] = None,
     reinfolib_key: Optional[str] = None,
+    zoning_api: Optional[str] = None,
 ) -> Tuple[SiteResolver, List[str]]:
     """設定・環境変数から `SiteResolver` を組み立てる。
 
@@ -354,8 +367,8 @@ def build_resolver(
         zoning = GeoJsonZoningProvider(zoning_geojson)
         notes.append(f"用途地域: 国土数値情報 A29 {zoning_geojson}")
     elif live and reinfolib_key:
-        zoning = ReinfolibZoningProvider(reinfolib_key)
-        notes.append("用途地域: 不動産情報ライブラリ API")
+        zoning = ReinfolibZoningProvider(reinfolib_key, api_name=zoning_api or "XKT013")
+        notes.append(f"用途地域: 不動産情報ライブラリ API（{zoning_api or 'XKT013'}）")
     else:
         notes.append("用途地域: 取得手段なし（手入力）")
 

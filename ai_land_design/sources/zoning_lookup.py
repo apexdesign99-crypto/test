@@ -182,16 +182,28 @@ class GeoJsonZoningProvider:
         return parse_zoning_properties(feature.get("properties", {}), self.source)
 
 
+#: 不動産情報ライブラリの API ベース URL
+REINFOLIB_BASE = "https://www.reinfolib.mlit.go.jp/ex-api/external"
+#: 用途地域 API の名称（提供元が変更した場合は設定で差し替える）
+DEFAULT_ZONING_API = "XKT013"
+
+
 class ReinfolibZoningProvider:
     """不動産情報ライブラリ（国土交通省）の用途地域 API。
 
     API キーは引数か環境変数 `REINFOLIB_API_KEY` から取得する。
+    API 名（既定 XKT013）は設定で差し替えられるようにしてある。
     """
 
-    ENDPOINT = "https://www.reinfolib.mlit.go.jp/ex-api/external/XKT013"
-    source = "不動産情報ライブラリ 用途地域API(XKT013)"
-
-    def __init__(self, api_key: Optional[str] = None, zoom: int = 15):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        zoom: int = 15,
+        api_name: str = DEFAULT_ZONING_API,
+        base_url: str = REINFOLIB_BASE,
+        timeout: float = 20.0,
+        retries: int = 2,
+    ):
         self.api_key = api_key or os.environ.get("REINFOLIB_API_KEY", "")
         if not self.api_key:
             raise ValueError(
@@ -200,13 +212,27 @@ class ReinfolibZoningProvider:
         if not 11 <= zoom <= 15:
             raise ValueError("zoom は 11〜15 の範囲で指定してください")
         self.zoom = zoom
+        self.api_name = api_name
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.retries = retries
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.base_url}/{self.api_name}"
+
+    @property
+    def source(self) -> str:
+        return f"不動産情報ライブラリ 用途地域API({self.api_name})"
 
     def zoning_at(self, lat: float, lon: float) -> Optional[ZoningRecord]:
         tile = lonlat_to_tile(lat, lon, self.zoom)
         response = fetch(
-            self.ENDPOINT,
+            self.endpoint,
             params={"response_format": "geojson", "z": tile.z, "x": tile.x, "y": tile.y},
             headers={"Ocp-Apim-Subscription-Key": self.api_key},
+            timeout=self.timeout,
+            retries=self.retries,
         )
         features = response.json().get("features", [])
         feature = find_feature(lat, lon, features)

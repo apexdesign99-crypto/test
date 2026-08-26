@@ -6,3 +6,8 @@ out/
 .DS_Store
 *.egg-info/
 .coverage
+
+# API キーなどの設定（コミットしない）
+.ai_land_design/
+*.settings.json
+.env

@@ -47,8 +47,14 @@ class GsiGeocoder:
 
     source = "国土地理院 住所検索API"
 
+    def __init__(self, timeout: float = 20.0, retries: int = 2):
+        self.timeout = timeout
+        self.retries = retries
+
     def geocode(self, address: str) -> Optional[GeoPoint]:
-        response = fetch(GSI_ADDRESS_SEARCH, params={"q": address})
+        response = fetch(
+            GSI_ADDRESS_SEARCH, params={"q": address}, timeout=self.timeout, retries=self.retries
+        )
         features = response.json()
         if not features:
             return None
@@ -68,7 +74,10 @@ class GsiGeocoder:
     def reverse(self, lat: float, lon: float) -> Optional[str]:
         """緯度経度 → 住所（市区町村＋町字）。"""
         try:
-            data = fetch(GSI_REVERSE, params={"lat": lat, "lon": lon}).json()
+            data = fetch(
+                GSI_REVERSE, params={"lat": lat, "lon": lon},
+                timeout=self.timeout, retries=self.retries,
+            ).json()
         except (ApiError, NetworkUnavailable):
             return None
         results = data.get("results") or {}

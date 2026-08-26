@@ -243,6 +243,28 @@ class HazardLookupTest(unittest.TestCase):
         self.assertFalse(result.hit)
         self.assertIn("凡例に一致しない", result.note)
 
+    def test_fetch_failure_is_not_reported_as_safe(self):
+        """取得できなかった場合に「浸水なし」と誤認させないこと。"""
+        from ai_land_design.sources.http import NetworkUnavailable
+
+        class Failing:
+            def tile(self, layer, z, x, y):
+                raise NetworkUnavailable("遮断されています")
+
+        provider = HazardTileProvider(Failing())
+        result = provider.flood_depth(35.6595, 139.6535)
+        self.assertFalse(result.determined)
+        self.assertIsNotNone(result.error)
+
+    def test_missing_tile_is_a_determination(self):
+        """タイルが無い＝対象区域外は「判定できた」扱い。"""
+        provider = self._provider()
+        self.assertTrue(provider.flood_depth(35.6595, 139.6535).determined)
+
+    def test_unknown_colour_is_not_determined(self):
+        provider = self._provider(flood_png=solid_png((3, 200, 40, 255)))
+        self.assertFalse(provider.flood_depth(35.6595, 139.6535).determined)
+
     def test_legend_matching(self):
         self.assertEqual(match_legend((247, 245, 169, 255), hazard_lookup.FLOOD_LEGEND), 0.3)
         self.assertEqual(match_legend((255, 183, 183, 255), hazard_lookup.FLOOD_LEGEND), 3.0)
@@ -332,6 +354,20 @@ class ResolverTest(unittest.TestCase):
         self.assertEqual(zoning.use_district, UseDistrict.LOW_RISE_1)
         self.assertEqual(zoning.height_limit_m, 10.0)
         self.assertEqual(zoning.wall_setback_m, 1.0)
+
+    def test_hazard_failure_produces_a_warning(self):
+        from ai_land_design.sources.http import NetworkUnavailable
+
+        class Failing:
+            def tile(self, layer, z, x, y):
+                raise NetworkUnavailable("遮断されています")
+
+        resolver = SiteResolver(
+            LocalGeocoder(FIXTURES / "geocode.json"), None, HazardTileProvider(Failing()), None
+        )
+        resolved = resolver.resolve("東京都世田谷区代田1-1-1", area_m2=180.0)
+        self.assertEqual(resolved.site.hazard.flood_depth_m, 0.0)
+        self.assertTrue(any("未確認" in w for w in resolved.warnings))
 
     def test_missing_zoning_falls_back_with_warning(self):
         resolver = SiteResolver(LocalGeocoder(FIXTURES / "geocode.json"))

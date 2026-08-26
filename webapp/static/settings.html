@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>データソース設定 — AI LAND DESIGN</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232f6f4f'/%3E%3Cpath d='M6 22 16 9l10 13z' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="header">
+  <div class="header-inner">
+    <div>
+      <h1>AI LAND DESIGN</h1>
+      <p class="tagline">データソース設定（API キー・参照ファイル）</p>
+    </div>
+    <a class="doc-link" href="/">← 診断画面へ戻る</a>
+  </div>
+</header>
+
+<main class="settings-layout">
+  <section class="panel" id="status-card">
+    <h2 class="card-title">現在の状態</h2>
+    <div id="status-body" class="hint">読み込み中…</div>
+  </section>
+
+  <form id="settings-form" class="panel">
+    <h2 class="card-title">不動産情報ライブラリ（国土交通省）</h2>
+    <p class="hint">
+      用途地域・建蔽率・容積率の取得に使います。API キーは
+      <a href="https://www.reinfolib.mlit.go.jp/" target="_blank" rel="noopener">不動産情報ライブラリ</a>
+      で申請したものを貼り付けてください。
+    </p>
+
+    <div class="field" id="key-saved-block" style="display:none">
+      <span>登録済みの API キー</span>
+      <div class="key-row">
+        <code id="key-masked">—</code>
+        <button type="button" class="ghost" id="key-change">変更する</button>
+        <button type="button" class="link" id="key-delete">削除</button>
+      </div>
+    </div>
+
+    <label class="field" id="key-input-block">
+      <span>API キー（Ocp-Apim-Subscription-Key）</span>
+      <input type="password" name="reinfolib_api_key" autocomplete="off" spellcheck="false"
+             placeholder="申請時に発行された文字列を貼り付け">
+    </label>
+    <label class="checks" style="margin-bottom:12px">
+      <label><input type="checkbox" id="show-key"> 入力中のキーを表示する</label>
+    </label>
+
+    <label class="field">
+      <span>用途地域 API 名</span>
+      <input type="text" name="zoning_api" value="XKT013" spellcheck="false">
+    </label>
+    <p class="hint">
+      既定は用途地域 API の <code>XKT013</code>。提供元で API 名が変わった場合はここで差し替えます
+      （エンドポイントは <code>https://www.reinfolib.mlit.go.jp/ex-api/external/&lt;API名&gt;</code>）。
+    </p>
+
+    <div class="checks" style="margin: 14px 0">
+      <label><input type="checkbox" name="live"> <strong>外部 API を利用する</strong>（国土地理院・ハザードマップ・OpenStreetMap・不動産情報ライブラリ）</label>
+    </div>
+    <p class="hint">オフにすると外部への通信を一切行わず、下のローカルファイルだけを使います。</p>
+
+    <h2 class="card-title" style="margin-top:22px">ローカルデータ（任意）</h2>
+    <label class="field">
+      <span>国土数値情報 A29（用途地域）の GeoJSON</span>
+      <input type="text" name="zoning_geojson" spellcheck="false" placeholder="/path/to/A29-tokyo.geojson">
+    </label>
+    <p class="hint">指定するとオフラインで用途地域を判定します（API より優先）。</p>
+    <label class="field">
+      <span>住所→座標のローカル辞書 JSON</span>
+      <input type="text" name="geocode_table" spellcheck="false" placeholder="/path/to/addresses.json">
+    </label>
+    <label class="field">
+      <span>ジオコーディング結果のキャッシュ JSON</span>
+      <input type="text" name="geocode_cache" spellcheck="false" placeholder="/path/to/geocode-cache.json">
+    </label>
+    <p class="hint">キャッシュは同じ住所への再問い合わせを防ぎます（存在しない場合は保存時に作成されます）。</p>
+
+    <div class="actions">
+      <button type="submit" class="primary" id="save-btn">保存する</button>
+      <button type="button" class="export-btn" id="test-btn">接続テスト</button>
+      <span class="status" id="form-status"></span>
+    </div>
+  </form>
+
+  <section class="panel" id="test-card">
+    <h2 class="card-title">接続テスト結果</h2>
+    <p class="hint">「接続テスト」を押すと、登録した設定で実際に各データソースへ接続します。</p>
+    <div id="test-body"></div>
+  </section>
+
+  <section class="panel">
+    <h2 class="card-title">取り扱いの注意</h2>
+    <ul class="notice">
+      <li>API キーはサーバ上の設定ファイルに保存され、<strong>所有者だけが読み書きできる権限（0600）</strong>になります。保存先は上の「現在の状態」に表示されます。</li>
+      <li>画面・API がキーを返すことはありません（末尾4文字以外はマスクされます）。</li>
+      <li>設定ファイルは <code>.gitignore</code> 済みです。リポジトリにコミットしないでください。</li>
+      <li><strong>このアプリに認証機能はありません。</strong>設定画面を含め、外部に公開せず、ローカルまたは社内ネットワーク限定で使ってください。</li>
+      <li>キーが漏れた恐れがある場合は、提供元で再発行し、この画面で登録し直してください。</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="footer">
+  <p>設定は環境変数でも指定できます（AI_LAND_DESIGN_LIVE / REINFOLIB_API_KEY / AI_LAND_DESIGN_ZONING_GEOJSON ほか）。この画面の保存値が環境変数より優先されます。</p>
+</footer>
+
+<script src="/static/settings.js"></script>
+</body>
+</html>

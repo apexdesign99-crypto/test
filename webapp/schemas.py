@@ -148,6 +148,21 @@ class OptionsIn(BaseModel):
         )
 
 
+class SettingsIn(BaseModel):
+    """データソース設定の更新。
+
+    `reinfolib_api_key` は空文字なら「変更なし」として既存の値を保持する
+    （画面はマスクした値しか持たないため）。
+    """
+
+    reinfolib_api_key: Optional[str] = Field(default=None, max_length=200)
+    zoning_api: Optional[str] = Field(default=None, max_length=40, pattern=r"^[A-Za-z0-9_-]*$")
+    live: Optional[bool] = None
+    zoning_geojson: Optional[str] = Field(default=None, max_length=500)
+    geocode_table: Optional[str] = Field(default=None, max_length=500)
+    geocode_cache: Optional[str] = Field(default=None, max_length=500)
+
+
 class ResolveRequest(BaseModel):
     """住所から敷地条件を自動取得するリクエスト。"""
 

@@ -34,9 +34,13 @@ from ai_land_design.models import Direction, FireZone, Site, Structure, UseDistr
 from ai_land_design.sources.gis import LocalGisProvider
 from ai_land_design.sources.http import ApiError, NetworkUnavailable
 from ai_land_design.sources.realestate import LocalRealEstateProvider
+from ai_land_design.sources.geocoding import GsiGeocoder
+from ai_land_design.sources.hazard_lookup import HazardTileProvider, HttpTileSource
 from ai_land_design.sources.resolve import build_resolver
+from ai_land_design.sources.zoning_lookup import GeoJsonZoningProvider, ReinfolibZoningProvider
 
-from .schemas import AnalyzeRequest, ResolveRequest
+from . import settings_store
+from .schemas import AnalyzeRequest, ResolveRequest, SettingsIn
 
 BASE_DIR = Path(__file__).resolve().parent
 SAMPLES_DIR = BASE_DIR.parent / "samples"
@@ -142,6 +146,178 @@ def listings(
     }
 
 
+def _resolver_from_settings():
+    """保存済みの設定（画面で登録した内容）でリゾルバを組み立てる。"""
+    settings, _ = settings_store.load()
+    return build_resolver(
+        live=settings.live,
+        zoning_geojson=settings.zoning_geojson or None,
+        geocode_table=settings.geocode_table or None,
+        geocode_cache=settings.geocode_cache or None,
+        reinfolib_key=settings.reinfolib_api_key or None,
+        zoning_api=settings.zoning_api,
+    )
+
+
+#: 接続テストに使う地点（東京都千代田区霞が関）
+TEST_POINT = (35.6759, 139.7509)
+TEST_ADDRESS = "東京都千代田区霞が関1-1-1"
+#: 接続テストは待たせないよう、短いタイムアウトで1回だけ試す
+TEST_TIMEOUT = 8.0
+TEST_RETRIES = 0
+
+
+def _describe_api_error(error: ApiError) -> str:
+    if error.status in (401, 403):
+        return (
+            f"認証エラー（{error.status}）。API キーが誤っているか、この API の利用申請が"
+            "まだ承認されていない可能性があります。"
+        )
+    if error.status == 404:
+        return f"エンドポイントが見つかりません（404）。API 名が正しいか確認してください。"
+    if error.status == 429:
+        return "レート制限（429）。しばらく待ってから再試行してください。"
+    return f"エラー応答（{error.status}）"
+
+
+@app.get("/api/settings")
+def read_settings() -> Dict[str, Any]:
+    """保存済みの設定（API キーはマスク）。"""
+    settings, origins = settings_store.load()
+    view = settings.public_view(origins)
+    view["config_path"] = str(settings_store.config_path().resolve())
+    view["config_exists"] = settings_store.config_path().exists()
+    try:
+        _, notes = _resolver_from_settings()
+        view["ready"] = True
+        view["sources"] = notes
+    except ValueError as error:
+        view["ready"] = False
+        view["sources"] = []
+        view["reason"] = str(error)
+    return view
+
+
+@app.put("/api/settings")
+def write_settings(payload: SettingsIn) -> Dict[str, Any]:
+    """設定を保存する。API キーが空文字なら既存の値を保持する。"""
+    changes = payload.model_dump(exclude_none=True)
+    for key in ("zoning_geojson", "geocode_table", "geocode_cache"):
+        value = changes.get(key)
+        if value and not Path(value).expanduser().exists():
+            raise HTTPException(status_code=422, detail=f"ファイルが見つかりません: {value}")
+        if value:
+            changes[key] = str(Path(value).expanduser())
+    settings_store.update(changes)
+    return read_settings()
+
+
+@app.delete("/api/settings/api-key")
+def delete_api_key() -> Dict[str, Any]:
+    """保存済みの API キーを削除する。"""
+    settings_store.clear_api_key()
+    return read_settings()
+
+
+@app.post("/api/settings/test")
+def test_settings() -> Dict[str, Any]:
+    """登録した設定で各データソースに実際に接続してみる。"""
+    settings, _ = settings_store.load()
+    results: List[Dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str, skipped: bool = False) -> None:
+        results.append({"name": name, "ok": ok, "detail": detail, "skipped": skipped})
+
+    # 1. ジオコーディング
+    if settings.geocode_table:
+        add("ジオコーディング（ローカル辞書）", True, f"辞書を使用: {settings.geocode_table}")
+    elif settings.live:
+        try:
+            point = GsiGeocoder(timeout=TEST_TIMEOUT, retries=TEST_RETRIES).geocode(TEST_ADDRESS)
+            if point:
+                add("ジオコーディング（国土地理院）", True, f"{TEST_ADDRESS} → {point.lat:.4f}, {point.lon:.4f}")
+            else:
+                add("ジオコーディング（国土地理院）", False, "応答は得られましたが該当なしでした")
+        except NetworkUnavailable as error:
+            add("ジオコーディング（国土地理院）", False, f"到達できません: {error}")
+        except ApiError as error:
+            add("ジオコーディング（国土地理院）", False, _describe_api_error(error))
+    else:
+        add("ジオコーディング", False, "外部 API が無効で、ローカル辞書も未設定です", skipped=True)
+
+    # 2. 用途地域
+    if settings.zoning_geojson:
+        try:
+            provider = GeoJsonZoningProvider(settings.zoning_geojson)
+            add(
+                "用途地域（国土数値情報 A29）",
+                bool(provider.features),
+                f"{len(provider.features)} 件のポリゴンを読み込みました",
+            )
+        except Exception as error:  # ファイル破損・形式違い
+            add("用途地域（国土数値情報 A29）", False, f"読み込めません: {error}")
+    elif settings.reinfolib_api_key and settings.live:
+        try:
+            provider = ReinfolibZoningProvider(
+                settings.reinfolib_api_key,
+                api_name=settings.zoning_api,
+                timeout=TEST_TIMEOUT,
+                retries=TEST_RETRIES,
+            )
+            record = provider.zoning_at(*TEST_POINT)
+            if record:
+                add(
+                    f"用途地域（不動産情報ライブラリ {settings.zoning_api}）",
+                    True,
+                    f"霞が関の判定: {record.use_district.value}",
+                )
+            else:
+                add(
+                    f"用途地域（不動産情報ライブラリ {settings.zoning_api}）",
+                    True,
+                    "API は応答しましたが、テスト地点に用途地域のポリゴンがありませんでした"
+                    "（キーは有効です）",
+                )
+        except ApiError as error:
+            add(f"用途地域（不動産情報ライブラリ {settings.zoning_api}）", False, _describe_api_error(error))
+        except NetworkUnavailable as error:
+            add(
+                f"用途地域（不動産情報ライブラリ {settings.zoning_api}）",
+                False,
+                f"到達できません: {error}",
+            )
+    elif settings.reinfolib_api_key:
+        add("用途地域（不動産情報ライブラリ）", False, "API キーはありますが「外部 API を利用」が無効です", skipped=True)
+    else:
+        add("用途地域", False, "A29 の GeoJSON も API キーも未設定です", skipped=True)
+
+    # 3. ハザード
+    if settings.live:
+        try:
+            result = HazardTileProvider(
+                HttpTileSource(timeout=TEST_TIMEOUT, retries=TEST_RETRIES)
+            ).flood_depth(*TEST_POINT)
+            if result.determined:
+                add(
+                    "ハザード（ハザードマップポータル）",
+                    True,
+                    f"タイル取得 OK（{result.note or '判定済み'}）",
+                )
+            else:
+                add("ハザード（ハザードマップポータル）", False, result.error or result.note)
+        except NetworkUnavailable as error:
+            add("ハザード（ハザードマップポータル）", False, f"到達できません: {error}")
+        except Exception as error:
+            add("ハザード（ハザードマップポータル）", False, str(error))
+    else:
+        add("ハザード", False, "「外部 API を利用」が無効です", skipped=True)
+
+    return {
+        "results": results,
+        "ok": all(r["ok"] for r in results if not r["skipped"]) and any(r["ok"] for r in results),
+    }
+
+
 @app.post("/api/resolve")
 def resolve(request: ResolveRequest) -> Dict[str, Any]:
     """住所から敷地条件（用途地域・建蔽率・容積率・道路・ハザード）を組み立てる。
@@ -155,7 +331,7 @@ def resolve(request: ResolveRequest) -> Dict[str, Any]:
         REINFOLIB_API_KEY=...              不動産情報ライブラリ API キー
     """
     try:
-        resolver, notes = build_resolver()
+        resolver, notes = _resolver_from_settings()
     except ValueError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -356,6 +532,11 @@ def package(request: AnalyzeRequest) -> Response:
 @app.get("/", include_in_schema=False)
 def index() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+@app.get("/settings", include_in_schema=False)
+def settings_page() -> HTMLResponse:
+    return HTMLResponse((STATIC_DIR / "settings.html").read_text(encoding="utf-8"))
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

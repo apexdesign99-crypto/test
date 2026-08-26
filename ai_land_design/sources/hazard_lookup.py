@@ -45,13 +45,23 @@ COLOR_TOLERANCE = 40
 
 @dataclass
 class HazardTileResult:
-    """1 レイヤ分の判定結果。"""
+    """1 レイヤ分の判定結果。
+
+    `error` が入っている場合は「該当なし」ではなく「判定できなかった」を意味する。
+    未取得を「危険なし」と取り違えないよう、呼び出し側は必ず区別すること。
+    """
 
     layer: str
     hit: bool
     value: Optional[float] = None
     color: Optional[RGBA] = None
     note: str = ""
+    error: Optional[str] = None
+
+    @property
+    def determined(self) -> bool:
+        """判定できたか（取得失敗・凡例外は False）。"""
+        return self.error is None
 
 
 def match_legend(color: RGBA, legend: List[Tuple[Tuple[int, int, int], float]]) -> Optional[float]:
@@ -76,14 +86,15 @@ class TileSource(Protocol):
 class HttpTileSource:
     """ハザードマップポータルからタイルを取得する。"""
 
-    def __init__(self, base_url: str = TILE_BASE, timeout: float = 15.0):
+    def __init__(self, base_url: str = TILE_BASE, timeout: float = 15.0, retries: int = 1):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.retries = retries
 
     def tile(self, layer: str, z: int, x: int, y: int) -> Optional[bytes]:
         url = f"{self.base_url}/{layer}/{z}/{x}/{y}.png"
         try:
-            return fetch(url, timeout=self.timeout, retries=1).body
+            return fetch(url, timeout=self.timeout, retries=self.retries).body
         except ApiError as error:
             if error.status == 404:
                 return None  # そのレイヤの対象外区域
@@ -117,7 +128,13 @@ class HazardTileProvider:
         try:
             data = self.tile_source.tile(layer, coord.z, coord.x, coord.y)
         except NetworkUnavailable as error:
-            return HazardTileResult(layer, False, note=f"取得できず: {error}")
+            return HazardTileResult(
+                layer, False, note="タイルを取得できませんでした", error=str(error)
+            )
+        except ApiError as error:
+            return HazardTileResult(
+                layer, False, note="タイル配信がエラーを返しました", error=str(error)
+            )
         if not data:
             return HazardTileResult(layer, False, note="対象区域外（タイルなし）")
         color = pixel_for(data, coord)
@@ -133,6 +150,7 @@ class HazardTileProvider:
             if depth is None:
                 result.note = f"凡例に一致しない色 {result.color[:3]}。手動確認が必要"
                 result.hit = False
+                result.error = "凡例に一致しない配色のため判定できません"
             else:
                 result.value = depth
         return result
