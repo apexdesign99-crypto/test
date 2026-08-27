@@ -15,7 +15,7 @@ from .config import (
     MAX_TOKENS,
     MAX_TOOL_ITERATIONS,
 )
-from .company import ProjectLedger
+from .company import OfficeProfile, ProjectLedger
 from .profile import EmployeeProfile
 from .tools import ToolBox
 from .workspace import Workspace, now
@@ -86,6 +86,7 @@ class Employee:
         self.listener = listener or Listener()
         # 案件台帳は事務所で 1 つ。社員のワークスペースの親(= 会社)に置く。
         self.ledger = ledger or ProjectLedger(workspace.root.parent)
+        self.office = OfficeProfile.load(workspace.root.parent)
         self.toolbox = ToolBox(
             workspace, profile.tools, profile.web_access, ledger=self.ledger
         )
@@ -135,10 +136,13 @@ class Employee:
         if len(mine) > 15:
             volatile.append(f"  - ...ほか {len(mine) - 15} 件")
 
+        # 職務定義書と事務所情報はどちらも滅多に変わらないので、
+        # まとめて 1 つの不変ブロックにしてキャッシュを効かせる。
+        stable = self.profile.system_prompt() + "\n\n" + self.office.as_prompt()
         return [
             {
                 "type": "text",
-                "text": self.profile.system_prompt(),
+                "text": stable,
                 "cache_control": {"type": "ephemeral"},
             },
             {"type": "text", "text": "\n".join(volatile)},

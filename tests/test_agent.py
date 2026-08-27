@@ -264,3 +264,33 @@ def test_社員は同じ案件台帳を共有する(workspace, profile, tmp_path
 
     created = a.ledger.add("田中邸 新築", by="eigyo")
     assert b.ledger.get(created["id"])["name"] == "田中邸 新築"
+
+
+def test_事務所プロフィールが不変ブロックに載る(workspace, profile, tmp_path):
+    from ai_employee.company import OfficeProfile
+
+    OfficeProfile(name="アペックス設計事務所", areas=["東京23区"]).save(tmp_path)
+    employee, client = make(workspace, profile, [say("はい")])
+    employee.work("初回返信を作って")
+
+    stable, volatile = client.messages.calls[0]["system"]
+    assert "アペックス設計事務所" in stable["text"]
+    assert "東京23区" in stable["text"]
+    # 事務所情報は滅多に変わらないのでキャッシュされる側に置く
+    assert stable["cache_control"] == {"type": "ephemeral"}
+    assert "アペックス" not in volatile["text"]
+
+
+def test_事務所プロフィール未設定なら作り話を禁じる指示が入る(workspace, profile):
+    employee, client = make(workspace, profile, [say("はい")])
+    employee.work("初回返信を作って")
+    stable = client.messages.calls[0]["system"][0]["text"]
+    assert "未設定" in stable
+    assert "書いてはいけません" in stable
+
+
+def test_集客ツールが社員に渡っている(workspace, profile):
+    employee, client = make(workspace, profile, [say("はい")])
+    employee.work("追客漏れを教えて")
+    names = [t.get("name") for t in client.messages.calls[0]["tools"]]
+    assert {"stale_projects", "source_report"} <= set(names)

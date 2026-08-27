@@ -8,26 +8,98 @@
 
 思考エンジンは Claude Opus 5(`claude-opus-5`)です。
 
-## クイックスタート
+## まずは集客担当から
+
+### 手順 1. 事務所プロフィールを設定する(最初にやる)
+
+**これを飛ばすと、施主向けの文面がまともに書けません。** 対応エリアも料金も相談の流れも
+AI は知らないからです。未設定のあいだ、社員はそれらを書かずに【要記入】の差し込み欄として
+残すよう指示されています(作り話を防ぐための意図的な設計です)。
 
 ```bash
 pip install -e .
 export ANTHROPIC_API_KEY=sk-ant-...   # または `ant auth login`
 
-# 1. 標準陣容(集客・営業・マーケ・事務・BIM)を一括採用
-python -m ai_employee hire-team
-
-# 2. 反響が入ったら集客担当に渡す
-python -m ai_employee ask --id shukyaku \
-  "HP から問い合わせ。田中様、世田谷区で戸建の新築を検討中。案件を起こして初回返信を作って"
-
-# 3. 営業担当が引き継ぐ(同じ案件台帳を見ている)
-python -m ai_employee ask --id eigyo "田中様の初回相談、ヒアリングの抜けを洗い出して"
-
-# 4. 事務所の全案件を確認
-python -m ai_employee projects
-python -m ai_employee projects --pipeline
+python -m ai_employee office \
+  --name "○○設計事務所" \
+  --location "東京都世田谷区" \
+  --areas "東京23区,川崎市,横浜市" \
+  --specialties "木造戸建の新築,店舗改修" \
+  --fee-policy "設計監理料は工事費の10%(最低300万円)" \
+  --consultation-flow "お問い合わせ,初回相談(無料・約90分),現地調査,プラン提案,設計契約" \
+  --business-hours "平日9:00-18:00" \
+  --contact "03-0000-0000 / info@example.com"
 ```
+
+`ai-office/_company/office.json` に保存されるので、後から直接編集しても構いません。
+`python -m ai_employee office --show` で、社員に渡っている内容をそのまま確認できます。
+
+### 手順 2. 集客担当を採用する
+
+```bash
+python -m ai_employee hire --id shukyaku --name "集客 AI" --template lead
+```
+
+### 手順 3. 反響を渡す
+
+問い合わせ本文をそのまま貼り付けてください。案件化・初回返信の下書き・確認事項の洗い出しまで
+一度に行います。
+
+```bash
+python -m ai_employee ask --id shukyaku \
+  "Instagram のDMから問い合わせ。佐々木様、目黒区で戸建の新築を検討中とのこと。
+   案件を起こして、初回返信の下書きを作って"
+```
+
+集客担当は次のように動きます。
+
+1. `list_projects` で同じ施主からの再問い合わせでないか確認
+2. `add_project` で起票(流入経路を必ず記録)
+3. 初回返信の下書きを作成 — 御礼・相談内容の復唱・次の具体的な提案(日程候補・所要時間・
+   オンライン可否)・当日確認したいこと・連絡先の 5 点が必ず入ります
+4. `update_project` で次アクションと期限を設定
+5. 書かれていなかった予算・時期・敷地の有無は「未確認」として確認事項に残します
+
+### 手順 4. 週次で取りこぼしを潰す
+
+集客で一番損が出るのは、反響そのものより**追客が止まった案件**です。
+
+```bash
+python -m ai_employee stale                  # 14日以上動いていない案件
+python -m ai_employee stale --days 7
+python -m ai_employee ask --id shukyaku "追客が止まっている案件を洗い出して、次の一手を提案して"
+```
+
+```
+14 日以上動いていない案件 2 件(放置が長い順)
+  [d14dc1c5] 田中様 世田谷区 新築  反響  最終更新 2026-07-27
+      担当: shukyaku  経路: HP問い合わせ  次: 未設定
+```
+
+台帳を更新すれば追客対象から外れます(更新日 = 最終接触日として扱う設計です)。
+
+### 手順 5. どの経路が効いているかを見る
+
+```bash
+python -m ai_employee sources
+python -m ai_employee sources --since 2026-04-01
+```
+
+```
+流入経路別の反響 (全期間)
+  経路                 反響 進行中 受注 失注  受注率
+  HP問い合わせ            3      2    0    1  0.0%  ※母数少
+  Instagram               1      1    0    0  -
+  紹介                    1      0    1    0  100.0%  ※母数少
+```
+
+受注率は決着済み(受注+失注)に対する割合で、進行中は母数に含みません。
+決着が 5 件未満の経路には「母数少」が付き、集客担当もその場合は効果を断定しません。
+まだ決着ゼロの経路は受注率 `0%` ではなく `-` と表示します(混同を避けるため)。
+
+---
+
+## クイックスタート(事務所全体)
 
 ## 5 職種
 
@@ -78,6 +150,8 @@ python -m ai_employee project <案件ID>            # 1 件の詳細と全経緯
 | `add_project` / `list_projects` / `get_project` | 案件の起票・検索・経緯の確認 |
 | `update_project` / `log_project` | 案件の更新と履歴追記(理由の記載が必須) |
 | `pipeline` | ステージ別の進行中件数(営業会議の材料) |
+| `stale_projects` | 一定期間動いていない案件(追客漏れの検知) |
+| `source_report` | 流入経路別の反響数・受注率 |
 | `record_note` / `search_notes` | 業務メモ。`project_id` で案件に紐付く |
 | `add_task` / `list_tasks` / `complete_task` | 自分のタスク管理 |
 | `list_files` / `read_file` / `write_file` | 成果物の読み書き |
@@ -101,6 +175,8 @@ python -m ai_employee project <案件ID>            # 1 件の詳細と全経緯
   自認させ、指示は担当者がそのまま実行できる手順として書かせます。
 - **未確認の数字を書かない**(営業・事務)。予算・面積・工期・金額は「聞けた事実」と「未確認」を
   必ず区別させ、概算には前提と未確定である旨を併記させます。
+- **事務所情報を作らない**(全職種)。事務所プロフィールが未設定なら、施主向けの文面に
+  事務所名・エリア・料金・日程を書かず、【要記入】の差し込み欄として残します。
 - **施主の個人情報を無断で原稿に載せない**(マーケ)。掲載許諾の確認を必ず論点として挙げ、
   「業界No.1」のような裏付けのない優良誤認表現を禁じています。
 
@@ -112,6 +188,7 @@ python -m ai_employee project <案件ID>            # 1 件の詳細と全経緯
 ```
 ai-office/
 ├── _company/
+│   ├── office.json      事務所プロフィール(施主向け文面の前提)
 │   └── projects.json    案件台帳(事務所で共有)
 └── <社員ID>/
     ├── profile.json     職務定義書(人間が編集する)
@@ -129,6 +206,7 @@ ai-office/
 
 | コマンド | 説明 |
 | --- | --- |
+| `office` | 事務所プロフィールを設定する(施主向け文面の前提) |
 | `hire-team` | 標準陣容 5 名を一括採用する |
 | `hire` | 個別に採用する |
 | `roster` | 在籍者と未完了タスク数を一覧する |
@@ -136,6 +214,8 @@ ai-office/
 | `chat` | 対話しながら業務を進める(`/exit` で終了、`/clear` で履歴消去) |
 | `report` | 当日の記録から日報を書かせて `files/reports/` に保存する |
 | `projects` / `project` | 案件台帳の一覧・詳細(`--pipeline` でステージ別件数) |
+| `stale` | 追客が止まっている案件を洗い出す |
+| `sources` | 流入経路別の反響数と受注率 |
 | `tasks` / `notes` | 社員のタスク・メモを人間が確認する |
 | `templates` | 職種テンプレートを一覧する |
 

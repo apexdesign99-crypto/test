@@ -18,7 +18,7 @@ from typing import Any
 
 from .agent import Employee, Listener
 from .config import office_root
-from .company import STAGES, CompanyError, ProjectLedger
+from .company import STAGES, CompanyError, OfficeProfile, ProjectLedger
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
 
@@ -37,6 +37,11 @@ def _pad(text: str, width: int, gap: int = 1) -> str:
     幅を超える項目でも列がくっつかないよう、最低 `gap` 桁は必ず空ける。
     """
     return text + " " * max(gap, width - _width(text))
+
+
+def _ralign(text: str, width: int) -> str:
+    """表示幅を揃えて右寄せする。"""
+    return " " * max(0, width - _width(text)) + text
 
 
 def _c(code: str, text: str) -> str:
@@ -131,6 +136,100 @@ def cmd_hire(args: argparse.Namespace) -> int:
         print(DIM("  Web 検索    : 有効"))
     print()
     print(f"次: python -m ai_employee ask --id {employee_id} \"最初の依頼\"")
+    return 0
+
+
+def cmd_office(args: argparse.Namespace) -> int:
+    """事務所プロフィールを作成・確認する。
+
+    ここが未設定だと、社員は施主向けの文面に事務所固有の情報を書けない
+    (作り話を防ぐため、意図的にそう指示している)。
+    """
+    office = OfficeProfile.load(args.office)
+
+    if args.show:
+        print(office.as_prompt())
+        return 0
+
+    changed = False
+    for attr in ("name", "location", "fee_policy", "business_hours", "contact", "notes"):
+        value = getattr(args, attr, None)
+        if value is not None:
+            setattr(office, attr, value)
+            changed = True
+    for attr in ("areas", "specialties", "consultation_flow"):
+        value = getattr(args, attr, None)
+        if value is not None:
+            setattr(office, attr, [v.strip() for v in value.split(",") if v.strip()])
+            changed = True
+
+    path = office.save(args.office)
+    if not changed and not office.is_configured():
+        print(BOLD("事務所プロフィールの雛形を作成しました。"))
+        print(f"  {path}")
+        print()
+        print("このファイルを直接編集するか、次のように指定してください:")
+        print(DIM(
+            '  python -m ai_employee office --name "○○設計事務所" \\\n'
+            '      --areas "東京23区,川崎市" --fee-policy "設計監理料は工事費の10%"'
+        ))
+        print()
+        print(RED("未設定のあいだ、社員は施主向けの文面に"
+                  "事務所名・エリア・料金・日程を書きません(作り話を防ぐため)。"))
+        return 0
+
+    print(BOLD("事務所プロフィールを保存しました。"))
+    print(f"  {path}")
+    print()
+    print(office.as_prompt())
+    return 0
+
+
+def cmd_stale(args: argparse.Namespace) -> int:
+    """追客が止まっている案件を洗い出す。"""
+    stalled = ProjectLedger(args.office).stale(days=args.days, stage=args.stage)
+    if not stalled:
+        print(f"{args.days} 日以上動いていない進行中案件はありません。")
+        return 0
+    print(BOLD(f"{args.days} 日以上動いていない案件 {len(stalled)} 件") + DIM("(放置が長い順)"))
+    for pj in stalled:
+        print(
+            BOLD(f"  [{pj['id']}] {pj['name']}")
+            + f"  {pj['stage']}  最終更新 {pj['updated_at'][:10]}"
+        )
+        print(
+            f"      担当: {pj.get('owner') or '-'}  経路: {pj.get('source') or '-'}  "
+            f"次: {pj.get('next_action') or RED('未設定')}"
+        )
+    return 0
+
+
+def cmd_sources(args: argparse.Namespace) -> int:
+    """流入経路ごとの反響数と受注率を集計する。"""
+    report = ProjectLedger(args.office).by_source(since=args.since)
+    if not report:
+        print("集計できる案件がありません。")
+        return 0
+    span = f"({args.since} 以降)" if args.since else "(全期間)"
+    print(BOLD(f"流入経路別の反響 {span}"))
+    header = (
+        _pad("経路", 20)
+        + _ralign("反響", 5)
+        + _ralign("進行中", 7)
+        + _ralign("受注", 5)
+        + _ralign("失注", 5)
+        + "  受注率"
+    )
+    print(DIM("  " + header))
+    for row in report:
+        rate = f"{row['win_rate']}%" if row["win_rate"] is not None else DIM("-")
+        decided = row["won"] + row["lost"]
+        note = DIM("  ※母数少") if 0 < decided < 5 else ""
+        print(
+            f"  {_pad(row['source'], 20)}{row['total']:>5}{row['active']:>7}"
+            f"{row['won']:>5}{row['lost']:>5}  {rate}{note}"
+        )
+    print(DIM("\n  受注率は決着済み(受注+失注)に対する割合。進行中は母数に含まない。"))
     return 0
 
 
@@ -345,6 +444,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_hire.add_argument("--web", action="store_true", help="Web 検索の権限を付与")
     p_hire.add_argument("--force", action="store_true", help="既存社員を上書き")
     p_hire.set_defaults(func=cmd_hire)
+
+    p_office = sub.add_parser(
+        "office", help="事務所プロフィールを設定する(施主向け文面の前提になる)"
+    )
+    p_office.add_argument("--show", action="store_true", help="現在の設定を表示する")
+    p_office.add_argument("--name", help="事務所名")
+    p_office.add_argument("--location", help="所在地")
+    p_office.add_argument("--areas", help="対応エリア(カンマ区切り)")
+    p_office.add_argument("--specialties", help="得意分野(カンマ区切り)")
+    p_office.add_argument("--fee-policy", dest="fee_policy", help="料金の考え方")
+    p_office.add_argument(
+        "--consultation-flow", dest="consultation_flow", help="初回相談の流れ(カンマ区切り)"
+    )
+    p_office.add_argument("--business-hours", dest="business_hours", help="営業時間")
+    p_office.add_argument("--contact", help="連絡先")
+    p_office.add_argument("--notes", help="補足")
+    p_office.set_defaults(func=cmd_office)
+
+    p_stale = sub.add_parser("stale", help="追客が止まっている案件を洗い出す")
+    p_stale.add_argument("--days", type=int, default=14, help="何日以上動いていないか(既定 14)")
+    p_stale.add_argument("--stage", choices=list(STAGES), help="このステージのみ")
+    p_stale.set_defaults(func=cmd_stale)
+
+    p_sources = sub.add_parser("sources", help="流入経路別の反響数と受注率を集計する")
+    p_sources.add_argument("--since", help="この日以降に起票された案件のみ (例 2026-04-01)")
+    p_sources.set_defaults(func=cmd_sources)
 
     p_team = sub.add_parser(
         "hire-team", help="設計事務所の標準陣容(集客・営業・マーケ・事務・BIM)を一括採用する"

@@ -164,3 +164,40 @@ def test_パイプラインツールが集計を返す(workspace, tmp_path):
     result = json.loads(box.run("pipeline", {})[0])
     assert result["active_total"] == 1
     assert result["by_stage"]["反響"] == 1
+
+
+def test_追客漏れツールは最後の履歴も返す(workspace, tmp_path):
+    """社員が「なぜ止まっているか」を判断できるようにするため。"""
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["stale_projects"], ledger=ledger)
+    ledger.add("放置案件", source="HP問い合わせ", by="shukyaku")
+
+    result = json.loads(box.run("stale_projects", {"days": 0})[0])
+    assert result["threshold_days"] == 0
+    assert result["count"] == 1
+    assert result["projects"][0]["last_entry"] == "案件を登録した"
+    assert "history" not in result["projects"][0]  # 全文は get_project で取る
+
+
+def test_負の日数はエラー結果になる(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(workspace, ["stale_projects"], ledger=ProjectLedger(tmp_path))
+    output, is_error = box.run("stale_projects", {"days": -5})
+    assert is_error
+    assert "0 以上" in output
+
+
+def test_流入経路ツールが集計を返す(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["source_report"], ledger=ledger)
+    ledger.add("A", source="Instagram")
+    result = json.loads(box.run("source_report", {})[0])
+    assert result["sources"][0]["source"] == "Instagram"

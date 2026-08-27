@@ -171,6 +171,29 @@ def build_tools(
         counts = ledger.pipeline()
         return {"active_total": sum(counts.values()), "by_stage": counts}
 
+    def stale_projects(days: int = 14, stage: str | None = None) -> dict:
+        stalled = ledger.stale(days=days, stage=stage)
+        slim = [
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "client": p["client"],
+                "stage": p["stage"],
+                "owner": p["owner"],
+                "source": p["source"],
+                "next_action": p["next_action"],
+                "next_due": p["next_due"],
+                "updated_at": p["updated_at"],
+                "last_entry": p["history"][-1]["entry"] if p["history"] else "",
+            }
+            for p in stalled
+        ]
+        return {"threshold_days": days, "count": len(slim), "projects": slim}
+
+    def source_report(since: str | None = None) -> dict:
+        report = ledger.by_source(since=since)
+        return {"since": since, "sources": report}
+
     def list_files(subdir: str = "") -> dict:
         files = workspace.list_files(subdir)
         return {"count": len(files), "files": files}
@@ -361,6 +384,42 @@ def build_tools(
             "進行中案件のステージ別件数を取得する。営業会議や受注見込みの把握に使う。",
             _obj({}, []),
             pipeline,
+        ),
+        Tool(
+            "stale_projects",
+            "一定期間動いていない進行中案件を、放置が長い順に返す。追客漏れの検知に使う。"
+            "報告する前に必ずこれで取りこぼしを確認すること。",
+            _obj(
+                {
+                    "days": {
+                        "type": "integer",
+                        "description": "最終更新から何日以上動いていないものを対象にするか(既定 14)",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "enum": list(STAGES),
+                        "description": "このステージに限定する",
+                    },
+                },
+                [],
+            ),
+            stale_projects,
+        ),
+        Tool(
+            "source_report",
+            "流入経路ごとの反響数・受注・失注・受注率を集計する。"
+            "どの集客施策が効いているかを判断する材料。受注率は決着済み案件に対する割合で、"
+            "進行中は母数に含まれない。",
+            _obj(
+                {
+                    "since": {
+                        "type": "string",
+                        "description": "この日以降に起票された案件のみ (例 2026-04-01)",
+                    }
+                },
+                [],
+            ),
+            source_report,
         ),
         Tool(
             "list_files",

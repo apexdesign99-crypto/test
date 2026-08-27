@@ -145,3 +145,81 @@ def test_案件の経緯を追える(tmp_path, capsys):
 def test_存在しない案件の照会はエラー終了(tmp_path, capsys):
     assert run(["project", "ffffffff"], tmp_path) == 1
     assert "案件が見つかりません" in capsys.readouterr().err
+
+
+# --------------------------------------------- 事務所プロフィールと集客
+
+
+def test_事務所プロフィールの雛形を作れる(tmp_path, capsys):
+    assert run(["office"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert (tmp_path / "_company" / "office.json").is_file()
+    assert "雛形を作成しました" in out
+    assert "作り話を防ぐため" in out
+
+
+def test_事務所プロフィールを設定できる(tmp_path, capsys):
+    assert run(
+        ["office", "--name", "アペックス設計事務所", "--areas", "東京23区, 川崎市"],
+        tmp_path,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "アペックス設計事務所" in out
+    assert "東京23区、川崎市" in out
+
+    saved = json.loads((tmp_path / "_company" / "office.json").read_text(encoding="utf-8"))
+    assert saved["areas"] == ["東京23区", "川崎市"]  # 前後の空白は落とす
+
+
+def test_事務所プロフィールを表示できる(tmp_path, capsys):
+    run(["office", "--name", "A設計"], tmp_path)
+    capsys.readouterr()
+    assert run(["office", "--show"], tmp_path) == 0
+    assert "A設計" in capsys.readouterr().out
+
+
+def seed_lead(tmp_path):
+    import json as _json
+    from datetime import timedelta
+
+    from ai_employee.company import ProjectLedger
+    from ai_employee.workspace import now
+
+    ledger = ProjectLedger(tmp_path)
+    ledger.add("田中様 新築", source="HP問い合わせ", owner="shukyaku", by="shukyaku")
+    won = ledger.add("伊藤様 二世帯", source="紹介", owner="shukyaku", by="shukyaku")
+    ledger.update(won["id"], "設計契約", status="won")
+
+    data = _json.loads(ledger.path.read_text(encoding="utf-8"))
+    for project in data:
+        if project["name"].startswith("田中"):
+            project["updated_at"] = (now() - timedelta(days=30)).isoformat(timespec="seconds")
+    ledger.path.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+def test_追客が止まっている案件を洗い出せる(tmp_path, capsys):
+    seed_lead(tmp_path)
+    assert run(["stale"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "田中様 新築" in out
+    assert "伊藤様 二世帯" not in out  # 受注済みは追客対象外
+
+
+def test_放置がなければその旨を伝える(tmp_path, capsys):
+    seed_lead(tmp_path)
+    assert run(["stale", "--days", "60"], tmp_path) == 0
+    assert "動いていない進行中案件はありません" in capsys.readouterr().out
+
+
+def test_流入経路別に集計できる(tmp_path, capsys):
+    seed_lead(tmp_path)
+    assert run(["sources"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "HP問い合わせ" in out
+    assert "紹介" in out
+    assert "母数少" in out  # 決着 5 件未満は断定させない
+
+
+def test_案件がなければ集計できないと伝える(tmp_path, capsys):
+    assert run(["sources"], tmp_path) == 0
+    assert "集計できる案件がありません" in capsys.readouterr().out

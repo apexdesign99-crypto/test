@@ -1,18 +1,22 @@
-"""会社共有の案件台帳。
+"""会社共有の情報——事務所プロフィールと案件台帳。
 
 社員ごとのワークスペースとは別に、事務所全体で 1 つだけ持つ台帳。
 集客が拾った反響を営業が追い、設計が図面を起こし、事務が請求する——という
 建築設計事務所の流れは、全員が同じ案件を見られないと成立しないため。
 
-    <office>/_company/projects.json
+    <office>/_company/office.json     事務所プロフィール
+    <office>/_company/projects.json   案件台帳
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from datetime import timedelta
 
 from .config import office_root
 from .workspace import now
@@ -43,6 +47,95 @@ KINDS = ("戸建住宅", "共同住宅", "店舗", "オフィス", "医療福祉
 
 class CompanyError(RuntimeError):
     """案件台帳の操作に失敗した。"""
+
+
+@dataclass
+class OfficeProfile:
+    """事務所そのものの情報。
+
+    施主に送る初回返信や案内文を書くには、対応エリア・料金の考え方・
+    相談の流れが要る。ここが空のまま書かせると社員が作り話をするため、
+    未設定であることを社員に明示して、事務所固有の情報を書かせない。
+    """
+
+    name: str = ""
+    location: str = ""
+    areas: list[str] = field(default_factory=list)
+    specialties: list[str] = field(default_factory=list)
+    fee_policy: str = ""
+    consultation_flow: list[str] = field(default_factory=list)
+    business_hours: str = ""
+    contact: str = ""
+    notes: str = ""
+
+    def is_configured(self) -> bool:
+        """施主向けの文面を書くのに足る情報があるか。"""
+        return bool(self.name.strip())
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "OfficeProfile":
+        unknown = set(data) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise CompanyError(f"事務所プロフィールに未知の項目があります: {sorted(unknown)}")
+        return cls(**data)
+
+    @classmethod
+    def load(cls, root: Path | None = None) -> "OfficeProfile":
+        path = (root or office_root()) / "_company" / "office.json"
+        if not path.is_file():
+            return cls()
+        return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def save(self, root: Path | None = None) -> Path:
+        path = (root or office_root()) / "_company" / "office.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def as_prompt(self) -> str:
+        """system プロンプトに差し込む事務所情報。"""
+        if not self.is_configured():
+            return (
+                "# 事務所情報\n"
+                "- 未設定です。事務所名・対応エリア・料金・相談の流れが分かりません。\n"
+                "- したがって、施主や社外に向けた文面に事務所固有の情報"
+                "(事務所名・エリア・料金・日程・連絡先・実績)を書いてはいけません。\n"
+                "- そうした情報が必要な文面を求められたら、"
+                "該当箇所を【要記入: 対応エリア】のような差し込み欄として残し、"
+                "「事務所プロフィールが未設定である」ことを報告に明記すること。"
+            )
+
+        lines = ["# 事務所情報(社外向けの文面はこの範囲で書く)", f"- 事務所名: {self.name}"]
+        for label, value in [
+            ("所在地", self.location),
+            ("料金の考え方", self.fee_policy),
+            ("営業時間", self.business_hours),
+            ("連絡先", self.contact),
+        ]:
+            if value.strip():
+                lines.append(f"- {label}: {value}")
+        for label, values in [
+            ("対応エリア", self.areas),
+            ("得意分野", self.specialties),
+        ]:
+            if values:
+                lines.append(f"- {label}: {'、'.join(values)}")
+        if self.consultation_flow:
+            lines.append("- 初回相談の流れ:")
+            lines.extend(f"  {i}. {step}" for i, step in enumerate(self.consultation_flow, 1))
+        if self.notes.strip():
+            lines.append(f"- 補足: {self.notes}")
+        lines.append(
+            "- ここに書かれていない事務所固有の情報(料金・日程・実績・エリア)は書かない。"
+            "必要なら【要確認】として残すこと。"
+        )
+        return "\n".join(lines)
 
 
 def _short_id() -> str:
@@ -225,6 +318,54 @@ class ProjectLedger:
         return self.update(project_id, note=entry, by=by)
 
     # ------------------------------------------------------------ 集計
+
+    def stale(self, days: int = 14, stage: str | None = None) -> list[dict[str, Any]]:
+        """一定期間動いていない進行中案件を返す。追客漏れの検知に使う。
+
+        「最終更新から days 日以上経過」で判定する。台帳を更新していれば
+        接触したことになるので、更新日 = 最終接触日として扱う。
+        """
+        if days < 0:
+            raise CompanyError("日数は 0 以上で指定してください")
+        cutoff = (now() - timedelta(days=days)).isoformat(timespec="seconds")
+        stalled = [
+            project
+            for project in self.list(stage=stage, status="active")
+            # 「days 日以上動いていない」の素直な読みに合わせて境界を含める。
+            # days=0 なら進行中の全案件が対象になる。
+            if project["updated_at"] <= cutoff
+        ]
+        # 放置が長い順(最終更新が古い順)に並べる。
+        stalled.sort(key=lambda p: p["updated_at"])
+        return stalled
+
+    def by_source(self, since: str | None = None) -> list[dict[str, Any]]:
+        """流入経路ごとの反響数と結果。どの施策が効いているかの判断材料。
+
+        受注率は決着済み(受注 + 失注)に対する割合。進行中は母数に含めない。
+        """
+        buckets: dict[str, dict[str, Any]] = {}
+        for project in self._read():
+            if since and project["created_at"] < since:
+                continue
+            source = (project.get("source") or "").strip() or "不明"
+            bucket = buckets.setdefault(
+                source,
+                {"source": source, "total": 0, "active": 0, "won": 0, "lost": 0, "other": 0},
+            )
+            bucket["total"] += 1
+            status = project["status"]
+            bucket[status if status in ("active", "won", "lost") else "other"] += 1
+
+        report = []
+        for bucket in buckets.values():
+            decided = bucket["won"] + bucket["lost"]
+            bucket["win_rate"] = (
+                round(bucket["won"] / decided * 100, 1) if decided else None
+            )
+            report.append(bucket)
+        report.sort(key=lambda b: b["total"], reverse=True)
+        return report
 
     def pipeline(self) -> dict[str, int]:
         """進行中案件のステージ別件数。営業会議の材料。"""
