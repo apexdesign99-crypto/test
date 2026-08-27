@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .billing import BILLING_STATUSES, with_tax
 from .company import (
     CHANNELS,
     CONSENT_STATUSES,
@@ -235,6 +236,36 @@ def build_tools(
 
     def review_copy(text: str) -> dict:
         return _review_copy(text)
+
+    def setup_billing(project_id: str, contract_amount: int) -> dict:
+        return ledger.setup_billing(project_id, contract_amount, office, by=me)
+
+    def update_billing(
+        project_id: str,
+        milestone_id: str,
+        status: str | None = None,
+        amount: int | None = None,
+        note: str | None = None,
+    ) -> dict:
+        return ledger.update_billing(
+            project_id, milestone_id, status=status, amount=amount, note=note, by=me
+        )
+
+    def billing_status(project_id: str) -> dict:
+        return ledger.billing_status(project_id)
+
+    def billing_alerts(payment_term_days: int | None = None) -> dict:
+        return ledger.billing_alerts(
+            payment_term_days
+            if payment_term_days is not None
+            else office.payment_term_days
+        )
+
+    def billing_overview() -> dict:
+        return ledger.billing_overview()
+
+    def tax_breakdown(amount: int) -> dict:
+        return with_tax(amount, office.tax_rate)
 
     def estimate_cost(
         kind: str,
@@ -580,6 +611,86 @@ def build_tools(
                 ["text"],
             ),
             review_copy,
+        ),
+        Tool(
+            "setup_billing",
+            "契約金額から出来高払いの請求計画を作る。設計契約が成立したら作成すること。"
+            "金額は円単位の整数で渡す。割り付けと端数調整はツール側で行うので、"
+            "自分で各回の金額を計算しない。既に請求済の回があると作り直せない。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "contract_amount": {
+                        "type": "integer",
+                        "description": "設計監理料の契約金額(円・税別)。原本で確認した金額のみ。",
+                    },
+                },
+                ["project_id", "contract_amount"],
+            ),
+            setup_billing,
+        ),
+        Tool(
+            "update_billing",
+            "請求の 1 回分を更新する。請求書を出したら請求済に、入金を確認したら入金済にする。"
+            "入金の確認は通帳や入金記録で裏を取ってから記録すること。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "milestone_id": {"type": "string", "description": "請求の回の ID (例 m2)"},
+                    "status": {
+                        "type": "string",
+                        "enum": list(BILLING_STATUSES),
+                        "description": "新しい状態",
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "description": "金額を直す場合の新しい金額(円・税別)",
+                    },
+                    "note": {"type": "string", "description": "備考"},
+                },
+                ["project_id", "milestone_id"],
+            ),
+            update_billing,
+        ),
+        Tool(
+            "billing_status",
+            "1 案件の請求計画と、請求済・入金済・未請求の合計を返す。"
+            "金額を報告する前に必ずこれで実際の数字を確認すること。",
+            _obj({"project_id": {"type": "string", "description": "案件 ID"}}, ["project_id"]),
+            billing_status,
+        ),
+        Tool(
+            "billing_alerts",
+            "請求漏れと入金遅延を洗い出す。請求漏れは案件のステージが請求条件に達しているのに"
+            "未請求の回、入金遅延は請求済のまま支払期日を過ぎた回。"
+            "請求まわりの報告をする前に必ずこれを確認すること。",
+            _obj(
+                {
+                    "payment_term_days": {
+                        "type": "integer",
+                        "description": "入金遅延とみなす日数。省略時は事務所の設定値。",
+                    }
+                },
+                [],
+            ),
+            billing_alerts,
+        ),
+        Tool(
+            "billing_overview",
+            "全案件の請求状況を横断で集計する。未入金の多い順に返る。"
+            "月次の資金繰りや売掛の把握に使う。",
+            _obj({}, []),
+            billing_overview,
+        ),
+        Tool(
+            "tax_breakdown",
+            "税別金額から消費税額と税込金額を計算する。自分で計算しないこと。"
+            "税率が事務所プロフィールに未設定なら税込を算出せず、その旨を返す。",
+            _obj(
+                {"amount": {"type": "integer", "description": "税別金額(円)"}},
+                ["amount"],
+            ),
+            tax_breakdown,
         ),
         Tool(
             "estimate_cost",

@@ -354,3 +354,68 @@ def test_空の原稿チェックはエラー結果になる(workspace):
     output, is_error = ToolBox(workspace, ["review_copy"]).run("review_copy", {"text": "  "})
     assert is_error
     assert "原稿が空" in output
+
+
+# ------------------------------------------------------------------ 事務
+
+
+def _billing_box(workspace, tmp_path, allowed):
+    from ai_employee.billing import EXAMPLE_SCHEDULE
+    from ai_employee.company import OfficeProfile, ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    OfficeProfile(
+        name="A設計",
+        billing_schedule=[{"label": l, "ratio": r, "stage": s} for l, r, s in EXAMPLE_SCHEDULE],
+    ).save(tmp_path)
+    ledger = ProjectLedger(tmp_path)
+    return ToolBox(workspace, allowed, ledger=ledger), ledger
+
+
+def test_請求計画ツールが割り付けを返す(workspace, tmp_path):
+    box, ledger = _billing_box(workspace, tmp_path, ["setup_billing"])
+    pid = ledger.add("田中邸 新築")["id"]
+    result = json.loads(box.run("setup_billing", {"project_id": pid, "contract_amount": 1_000_001})[0])
+    assert sum(m["amount"] for m in result["plan"]) == 1_000_001
+
+
+def test_スケジュール未設定なら請求計画を作れない(workspace, tmp_path):
+    """事務所の契約実態を推測して割り付けさせない。"""
+    from ai_employee.company import OfficeProfile, ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    OfficeProfile(name="A設計").save(tmp_path)
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["setup_billing"], ledger=ledger)
+    pid = ledger.add("田中邸 新築")["id"]
+    output, is_error = box.run("setup_billing", {"project_id": pid, "contract_amount": 1_000_000})
+    assert is_error
+    assert "請求スケジュールが事務所プロフィールに未設定" in output
+
+
+def test_請求漏れツールが理由つきで返す(workspace, tmp_path):
+    box, ledger = _billing_box(workspace, tmp_path, ["setup_billing", "billing_alerts"])
+    pid = ledger.add("田中邸 新築")["id"]
+    box.run("setup_billing", {"project_id": pid, "contract_amount": 1_000_000})
+    ledger.update(pid, "契約成立", stage="設計契約")
+
+    result = json.loads(box.run("billing_alerts", {})[0])
+    assert len(result["unbilled"]) == 1
+    assert result["unbilled_amount"] == 300_000
+    assert "設計契約" in result["unbilled"][0]["reason"]
+
+
+def test_税込計算ツールは税率未設定なら算出しない(workspace, tmp_path):
+    box, _ = _billing_box(workspace, tmp_path, ["tax_breakdown"])
+    result = json.loads(box.run("tax_breakdown", {"amount": 1_000_000})[0])
+    assert result["including_tax"] is None
+    assert "未設定" in result["note"]
+
+
+def test_横断集計ツールが合計を返す(workspace, tmp_path):
+    box, ledger = _billing_box(workspace, tmp_path, ["setup_billing", "billing_overview"])
+    pid = ledger.add("田中邸 新築")["id"]
+    box.run("setup_billing", {"project_id": pid, "contract_amount": 1_000_000})
+    result = json.loads(box.run("billing_overview", {})[0])
+    assert result["totals"]["total"] == 1_000_000
+    assert result["totals"]["unbilled"] == 1_000_000

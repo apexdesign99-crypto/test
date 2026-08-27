@@ -367,3 +367,104 @@ def test_チェック対象は本文かファイルのどちらか(tmp_path):
         run(["check"], tmp_path)
     with pytest.raises(SystemExit):
         run(["check", "--text", "a", "--file", "b"], tmp_path)
+
+
+# ------------------------------------------------------------------ 事務
+
+
+def setup_billing_office(tmp_path):
+    from ai_employee.company import ProjectLedger
+
+    run(
+        [
+            "office", "--name", "A設計",
+            "--billing-schedule",
+            "契約金:30:設計契約,基本設計完了:30:基本設計,実施設計完了:30:実施設計,引渡:10:竣工",
+        ],
+        tmp_path,
+    )
+    ledger = ProjectLedger(tmp_path)
+    project = ledger.add("田中邸 新築", "田中様", "戸建住宅", owner="eigyo")
+    ledger.update(project["id"], "実施設計に着手", stage="実施設計")
+    return project["id"]
+
+
+def test_請求スケジュールを設定できる(tmp_path):
+    setup_billing_office(tmp_path)
+    saved = json.loads((tmp_path / "_company" / "office.json").read_text(encoding="utf-8"))
+    assert saved["billing_schedule"][0] == {"label": "契約金", "ratio": 30, "stage": "設計契約"}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "契約金:30",                      # 項目数が足りない
+        "契約金:30:着工前",                # 不正なステージ
+        "契約金:半分:設計契約",             # 割合が整数でない
+        "契約金:50:設計契約",              # 合計が 100% でない
+        "契約金:0:設計契約,引渡:100:竣工",  # 割合が 0
+    ],
+)
+def test_請求スケジュールの書式不正は弾かれる(tmp_path, raw):
+    assert run(["office", "--billing-schedule", raw], tmp_path) == 1
+
+
+def test_請求計画を作成して明細を見られる(tmp_path, capsys):
+    project_id = setup_billing_office(tmp_path)
+    capsys.readouterr()
+    assert run(["billing", "--project", project_id, "--setup", "1000001"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "1,000,001 円" in out
+    assert "端数 1 円を調整" in out
+    assert "未請求" in out
+
+
+def test_請求計画がなければその旨を伝える(tmp_path, capsys):
+    project_id = setup_billing_office(tmp_path)
+    capsys.readouterr()
+    assert run(["billing", "--project", project_id], tmp_path) == 0
+    assert "請求計画は未作成です" in capsys.readouterr().out
+
+
+def test_請求と入金を記録できる(tmp_path, capsys):
+    project_id = setup_billing_office(tmp_path)
+    run(["billing", "--project", project_id, "--setup", "1000000"], tmp_path)
+    capsys.readouterr()
+    assert run(["billing", "--project", project_id, "--paid", "m1"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "入金済" in out
+    assert "入金済 300,000" in out
+
+
+def test_請求漏れを洗い出せる(tmp_path, capsys):
+    project_id = setup_billing_office(tmp_path)
+    run(["billing", "--project", project_id, "--setup", "1000000"], tmp_path)
+    capsys.readouterr()
+    assert run(["billing", "--alerts"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "請求漏れの疑い 3 件" in out
+    assert "900,000 円" in out
+
+
+def test_漏れがなければその旨を伝える(tmp_path, capsys):
+    setup_billing_office(tmp_path)
+    capsys.readouterr()
+    assert run(["billing", "--alerts"], tmp_path) == 0
+    assert "請求漏れ・入金遅延" in capsys.readouterr().out
+
+
+def test_全案件の請求状況を横断で見られる(tmp_path, capsys):
+    project_id = setup_billing_office(tmp_path)
+    run(["billing", "--project", project_id, "--setup", "1000000"], tmp_path)
+    capsys.readouterr()
+    assert run(["billing"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "田中邸 新築" in out
+    assert "合計" in out
+
+
+def test_請求計画のある案件がなければ伝える(tmp_path, capsys):
+    setup_billing_office(tmp_path)
+    capsys.readouterr()
+    assert run(["billing"], tmp_path) == 0
+    assert "請求計画のある案件がありません" in capsys.readouterr().out

@@ -27,6 +27,7 @@ from .company import (
     OfficeProfile,
     ProjectLedger,
 )
+from .billing import BILLING_STATUSES, EXAMPLE_SCHEDULE
 from .copycheck import review_copy
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
@@ -174,6 +175,37 @@ def _parse_unit_prices(raw: str) -> dict[str, list[int]]:
     return prices
 
 
+def _parse_billing_schedule(raw: str) -> list[dict[str, Any]]:
+    """"契約金:30:設計契約,引渡:70:竣工" 形式を配分表に変換する。"""
+    schedule: list[dict[str, Any]] = []
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = [part.strip() for part in chunk.split(":")]
+        if len(parts) != 3:
+            raise ValueError(
+                f"請求スケジュールの書式が不正です: {chunk} "
+                f"(例 契約金:30:設計契約)"
+            )
+        label, ratio, stage = parts
+        if not label:
+            raise ValueError(f"表示名が空です: {chunk}")
+        if stage not in STAGES:
+            raise ValueError(f"不正なステージです: {stage} (選択肢: {'/'.join(STAGES)})")
+        try:
+            ratio_value = int(ratio)
+        except ValueError:
+            raise ValueError(f"配分割合は整数で指定してください: {chunk}") from None
+        if ratio_value <= 0:
+            raise ValueError(f"配分割合は 1 以上で指定してください: {chunk}")
+        schedule.append({"label": label, "ratio": ratio_value, "stage": stage})
+    total = sum(entry["ratio"] for entry in schedule)
+    if total != 100:
+        raise ValueError(f"配分割合の合計が {total}% です。100% にしてください。")
+    return schedule
+
+
 def cmd_office(args: argparse.Namespace) -> int:
     """事務所プロフィールを作成・確認する。
 
@@ -187,6 +219,15 @@ def cmd_office(args: argparse.Namespace) -> int:
         return 0
 
     changed = False
+    if args.billing_schedule is not None:
+        office.billing_schedule = _parse_billing_schedule(args.billing_schedule)
+        changed = True
+    if args.tax_rate is not None:
+        office.tax_rate = args.tax_rate
+        changed = True
+    if args.payment_term_days is not None:
+        office.payment_term_days = args.payment_term_days
+        changed = True
     if args.unit_prices is not None:
         office.unit_prices = _parse_unit_prices(args.unit_prices)
         changed = True
@@ -344,6 +385,97 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(f"      {flag['reason']}")
     print(DIM(f"\n※ {result['disclaimer']}"))
     return 1 if result["count"] else 0
+
+
+def _yen(value: int | None) -> str:
+    return f"{value:,} 円" if value is not None else "-"
+
+
+def cmd_billing(args: argparse.Namespace) -> int:
+    """請求状況の確認・請求計画の作成・請求と入金の記録。"""
+    ledger = ProjectLedger(args.office)
+    office = OfficeProfile.load(args.office)
+
+    if args.alerts:
+        term = args.payment_term_days or office.payment_term_days
+        result = ledger.billing_alerts(term)
+        if result["unbilled"]:
+            print(RED(f"請求漏れの疑い {len(result['unbilled'])} 件 "
+                      f"(計 {result['unbilled_amount']:,} 円)"))
+            for item in result["unbilled"]:
+                print(f"  [{item['project_id']}] {_pad(item['project_name'], 22)}"
+                      f"{_pad(item['label'], 16)}{_yen(item['amount'])}")
+                print(DIM(f"      {item['reason']}"))
+        if result["overdue"]:
+            print(RED(f"\n入金遅延 {len(result['overdue'])} 件 "
+                      f"(計 {result['overdue_amount']:,} 円)"))
+            for item in result["overdue"]:
+                print(f"  [{item['project_id']}] {_pad(item['project_name'], 22)}"
+                      f"{_pad(item['label'], 16)}{_yen(item['amount'])}"
+                      f"  請求 {item['invoiced_at'][:10]}")
+        if not result["unbilled"] and not result["overdue"]:
+            print(f"請求漏れ・入金遅延({term} 日基準)はありません。")
+        return 0
+
+    if not args.project:
+        overview = ledger.billing_overview()
+        if not overview["projects"]:
+            print("請求計画のある案件がありません。")
+            return 0
+        print(BOLD("案件別の請求状況") + DIM("(未入金の多い順・すべて税別)"))
+        header = (
+            _pad("案件", 26) + _ralign("契約額", 14) + _ralign("入金済", 14)
+            + _ralign("未入金", 14) + _ralign("未請求", 14)
+        )
+        print(DIM("  " + header))
+        for row in overview["projects"]:
+            print(f"  {_pad(row['project_name'], 26)}"
+                  f"{row['total']:>14,}{row['paid']:>14,}"
+                  f"{row['outstanding']:>14,}{row['unbilled']:>14,}")
+        grand = overview["totals"]
+        print(DIM("  " + "-" * 82))
+        print(f"  {_pad('合計', 26)}{grand['total']:>14,}{grand['paid']:>14,}"
+              f"{grand['outstanding']:>14,}{grand['unbilled']:>14,}")
+        return 0
+
+    if args.setup is not None:
+        ledger.setup_billing(args.project, args.setup, office)
+    for milestone_id, status in (
+        (args.invoiced, "請求済"),
+        (args.paid, "入金済"),
+        (args.reset, "未請求"),
+    ):
+        if milestone_id:
+            ledger.update_billing(args.project, milestone_id, status=status)
+
+    status = ledger.billing_status(args.project)
+    print(BOLD(f"[{status['project_id']}] {status['project_name']}")
+          + f"  {status['stage']}")
+    if not status["configured"]:
+        print(DIM("  請求計画は未作成です。--setup <契約金額(円)> で作成できます。"))
+        return 0
+
+    print(f"  契約金額: {_yen(status['contract_amount'])} " + DIM("(税別)"))
+    print()
+    for milestone in status["plan"]:
+        mark = {"入金済": BOLD, "請求済": CYAN, "未請求": DIM}[milestone["status"]]
+        dates = []
+        if milestone["invoiced_at"]:
+            dates.append(f"請求 {milestone['invoiced_at'][:10]}")
+        if milestone["paid_at"]:
+            dates.append(f"入金 {milestone['paid_at'][:10]}")
+        print(f"  {milestone['id']}  {_pad(milestone['label'], 18)}"
+              f"{milestone['amount']:>12,}  {mark(_pad(milestone['status'], 8))}"
+              + DIM("  ".join(dates)))
+        if milestone["note"]:
+            print(DIM(f"        {milestone['note']}"))
+
+    t = status["totals"]
+    print()
+    print(f"  入金済 {t['paid']:,} / 未入金 {t['outstanding']:,} / 未請求 {t['unbilled']:,} 円")
+    if office.tax_rate is None:
+        print(DIM("  消費税率が未設定のため、税込金額は表示していません。"))
+    return 0
 
 
 def cmd_stale(args: argparse.Namespace) -> int:
@@ -635,7 +767,36 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="設計監理料の最低額(万円)",
     )
+    p_office.add_argument(
+        "--billing-schedule",
+        dest="billing_schedule",
+        help="出来高払いの配分。"
+        + '"' + ",".join(f"{l}:{r}:{s}" for l, r, s in EXAMPLE_SCHEDULE) + '" 形式',
+    )
+    p_office.add_argument("--tax-rate", dest="tax_rate", type=float, help="消費税率 (%%)")
+    p_office.add_argument(
+        "--payment-term-days",
+        dest="payment_term_days",
+        type=int,
+        help="入金遅延とみなす日数(既定 30)",
+    )
     p_office.set_defaults(func=cmd_office)
+
+    p_billing = sub.add_parser("billing", help="請求状況の確認と、請求・入金の記録")
+    p_billing.add_argument("--project", help="案件 ID(明細を見る/更新する)")
+    p_billing.add_argument(
+        "--alerts", action="store_true", help="請求漏れと入金遅延だけを表示する"
+    )
+    p_billing.add_argument(
+        "--setup", type=int, metavar="金額", help="契約金額(円)から請求計画を作る"
+    )
+    p_billing.add_argument("--invoiced", metavar="回ID", help="この回を請求済にする")
+    p_billing.add_argument("--paid", metavar="回ID", help="この回を入金済にする")
+    p_billing.add_argument("--reset", metavar="回ID", help="この回を未請求に戻す")
+    p_billing.add_argument(
+        "--payment-term-days", dest="payment_term_days", type=int, help="入金遅延の判定日数"
+    )
+    p_billing.set_defaults(func=cmd_billing)
 
     p_hearing = sub.add_parser("hearing", help="案件のヒアリング状況を確認する")
     p_hearing.add_argument("project_id", help="案件 ID")

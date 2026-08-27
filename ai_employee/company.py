@@ -18,6 +18,15 @@ from typing import Any
 
 from datetime import timedelta
 
+from .billing import (
+    BILLING_STATUSES,
+    DEFAULT_PAYMENT_TERM_DAYS,
+    BillingError,
+    build_plan,
+    totals,
+    validate_schedule,
+    with_tax,
+)
 from .config import office_root
 from .workspace import now
 
@@ -104,6 +113,11 @@ class OfficeProfile:
     unit_prices: dict[str, list[int]] = field(default_factory=dict)
     design_fee_rate: float | None = None      # 設計監理料率 (%)
     design_fee_minimum: int | None = None     # 設計監理料の最低額 (万円)
+
+    # 出来高払いの配分。[{"label":..., "ratio": 30, "stage": "設計契約"}, ...]
+    billing_schedule: list[dict[str, Any]] = field(default_factory=list)
+    tax_rate: float | None = None             # 消費税率 (%)。未設定なら税込を出さない
+    payment_term_days: int = DEFAULT_PAYMENT_TERM_DAYS  # 入金遅延とみなす日数
 
     def is_configured(self) -> bool:
         """施主向けの文面を書くのに足る情報があるか。"""
@@ -272,6 +286,20 @@ class OfficeProfile:
                 "金額を求められたら算定できない旨と、必要な設定を報告すること。"
                 "推測した数字を書いてはいけない。"
             )
+        if self.billing_schedule:
+            steps = "、".join(
+                f"{e['label']} {e['ratio']}%({e['stage']}到達時)" for e in self.billing_schedule
+            )
+            lines.append(f"- 出来高払いの配分: {steps}")
+        if self.tax_rate is not None:
+            lines.append(
+                f"- 消費税率: {self.tax_rate}%(事務所の設定値。適用税率は事務所で確認する)"
+            )
+        else:
+            lines.append(
+                "- 消費税率が未設定のため、税込金額を算出できない。"
+                "税込を求められたら算出できない旨を報告し、推測した税額を書かない。"
+            )
         lines.append(
             "- ここに書かれていない事務所固有の情報(料金・日程・実績・エリア)は書かない。"
             "必要なら【要確認】として残すこと。"
@@ -352,6 +380,8 @@ class ProjectLedger:
             "consent": {"status": "未確認", "conditions": "", "at": None, "by": None},
             # 発信履歴。どの案件をどのチャネルで出したかを残す。
             "publications": [],
+            # 出来高払いの請求計画。契約後に setup_billing で作る。
+            "billing": {"contract_amount": None, "plan": []},
             "created_at": stamp,
             "updated_at": stamp,
             "history": [
@@ -693,6 +723,211 @@ class ProjectLedger:
             "note": "ready は発信できる案件。needs_consent は先に施主の許諾が必要な案件で、"
             "許諾が取れるまで原稿を書いてはいけない。",
         }
+
+    # ------------------------------------------------------------ 請求
+
+    def setup_billing(
+        self, project_id: str, contract_amount: int, office: "OfficeProfile", by: str = ""
+    ) -> dict[str, Any]:
+        """契約金額から出来高払いの請求計画を作る。
+
+        金額の割り付けは billing.build_plan が行う(端数は最終回で吸収)。
+        既に請求済・入金済の回がある場合は作り直しを拒否する——
+        実績を消してしまうため。
+        """
+        project = self.get(project_id)
+        existing = (project.get("billing") or {}).get("plan", [])
+        done = [m for m in existing if m["status"] != "未請求"]
+        if done:
+            raise CompanyError(
+                f"既に請求済/入金済の回が {len(done)} 件あるため請求計画を作り直せません。"
+                f"金額の変更が必要な場合は、個別の回を update_billing で調整してください。"
+            )
+
+        plan = build_plan(contract_amount, office.billing_schedule)
+
+        projects = self._read()
+        for record in projects:
+            if record["id"] != project_id:
+                continue
+            stamp = now().isoformat(timespec="seconds")
+            record["billing"] = {"contract_amount": contract_amount, "plan": plan}
+            record["updated_at"] = stamp
+            record["history"].append(
+                {
+                    "at": stamp,
+                    "by": by or "unknown",
+                    "entry": f"請求計画を作成: 契約金額 {contract_amount:,} 円 / {len(plan)} 回",
+                }
+            )
+            self._write(projects)
+            return record["billing"]
+        raise CompanyError(f"案件が見つかりません: {project_id}")
+
+    def update_billing(
+        self,
+        project_id: str,
+        milestone_id: str,
+        status: str | None = None,
+        amount: int | None = None,
+        note: str | None = None,
+        by: str = "",
+    ) -> dict[str, Any]:
+        """請求の 1 回分を更新する(請求済にする、入金済にする、金額を直す)。"""
+        if status is not None and status not in BILLING_STATUSES:
+            raise CompanyError(
+                f"不正な請求状態です: {status} (選択肢: {'/'.join(BILLING_STATUSES)})"
+            )
+        if amount is not None and amount <= 0:
+            raise CompanyError("金額は 1 円以上で指定してください")
+
+        projects = self._read()
+        for record in projects:
+            if record["id"] != project_id:
+                continue
+            plan = (record.get("billing") or {}).get("plan", [])
+            for milestone in plan:
+                if milestone["id"] != milestone_id:
+                    continue
+                stamp = now().isoformat(timespec="seconds")
+                changes = []
+                if amount is not None and amount != milestone["amount"]:
+                    changes.append(f"金額 {milestone['amount']:,} → {amount:,} 円")
+                    milestone["amount"] = amount
+                if status is not None and status != milestone["status"]:
+                    changes.append(f"{milestone['status']} → {status}")
+                    milestone["status"] = status
+                    if status == "請求済" and not milestone["invoiced_at"]:
+                        milestone["invoiced_at"] = stamp
+                    if status == "入金済":
+                        milestone["paid_at"] = stamp
+                        # 請求を飛ばして入金になることはないので、請求日も埋める。
+                        milestone["invoiced_at"] = milestone["invoiced_at"] or stamp
+                    if status == "未請求":
+                        milestone["invoiced_at"] = None
+                        milestone["paid_at"] = None
+                if note is not None:
+                    milestone["note"] = note.strip()
+                if not changes and note is None:
+                    raise CompanyError("変更内容がありません")
+
+                record["updated_at"] = stamp
+                record["history"].append(
+                    {
+                        "at": stamp,
+                        "by": by or "unknown",
+                        "entry": f"請求 [{milestone_id}] {milestone['label']}: "
+                        + "、".join(changes or ["備考を更新"]),
+                    }
+                )
+                self._write(projects)
+                return milestone
+            raise CompanyError(
+                f"請求の回が見つかりません: {milestone_id}"
+                + ("(請求計画が未作成です)" if not plan else "")
+            )
+        raise CompanyError(f"案件が見つかりません: {project_id}")
+
+    def billing_status(self, project_id: str) -> dict[str, Any]:
+        """1 案件の請求状況と合計を返す。"""
+        project = self.get(project_id)
+        billing = project.get("billing") or {"contract_amount": None, "plan": []}
+        plan = billing.get("plan", [])
+        return {
+            "project_id": project["id"],
+            "project_name": project["name"],
+            "stage": project["stage"],
+            "contract_amount": billing.get("contract_amount"),
+            "plan": plan,
+            "totals": totals(plan),
+            "configured": bool(plan),
+        }
+
+    def billing_alerts(
+        self, payment_term_days: int = DEFAULT_PAYMENT_TERM_DAYS
+    ) -> dict[str, Any]:
+        """請求漏れと入金遅延を洗い出す。事務の実害はこの 2 つに集中する。
+
+        請求漏れ: 案件のステージが請求条件のステージに達しているのに未請求。
+        入金遅延: 請求済のまま支払期日を過ぎている。
+        """
+        if payment_term_days < 0:
+            raise CompanyError("支払期日は 0 以上の日数で指定してください")
+        cutoff = (now() - timedelta(days=payment_term_days)).isoformat(timespec="seconds")
+
+        unbilled, overdue = [], []
+        for project in self._read():
+            if project["status"] in ("lost", "cancelled"):
+                continue
+            plan = (project.get("billing") or {}).get("plan", [])
+            if not plan:
+                continue
+            try:
+                stage_index = STAGES.index(project["stage"])
+            except ValueError:  # 台帳を手で編集した場合の保険
+                stage_index = -1
+
+            for milestone in plan:
+                base = {
+                    "project_id": project["id"],
+                    "project_name": project["name"],
+                    "client": project.get("client", ""),
+                    "milestone_id": milestone["id"],
+                    "label": milestone["label"],
+                    "amount": milestone["amount"],
+                }
+                if milestone["status"] == "未請求":
+                    trigger = milestone.get("trigger_stage")
+                    if trigger in STAGES and stage_index >= STAGES.index(trigger):
+                        unbilled.append(
+                            {
+                                **base,
+                                "project_stage": project["stage"],
+                                "trigger_stage": trigger,
+                                "reason": f"案件は「{project['stage']}」まで進んでいるが、"
+                                f"「{trigger}」到達で請求できる回が未請求。",
+                            }
+                        )
+                elif milestone["status"] == "請求済" and (milestone["invoiced_at"] or "") <= cutoff:
+                    overdue.append(
+                        {
+                            **base,
+                            "invoiced_at": milestone["invoiced_at"],
+                            "reason": f"請求から {payment_term_days} 日以上入金が確認できていない。",
+                        }
+                    )
+
+        unbilled.sort(key=lambda a: -a["amount"])
+        overdue.sort(key=lambda a: a["invoiced_at"] or "")
+        return {
+            "payment_term_days": payment_term_days,
+            "unbilled": unbilled,
+            "overdue": overdue,
+            "unbilled_amount": sum(a["amount"] for a in unbilled),
+            "overdue_amount": sum(a["amount"] for a in overdue),
+        }
+
+    def billing_overview(self) -> dict[str, Any]:
+        """全案件の請求状況を横断で集計する。"""
+        rows, grand = [], {"total": 0, "invoiced": 0, "paid": 0, "unbilled": 0, "outstanding": 0}
+        for project in self._read():
+            plan = (project.get("billing") or {}).get("plan", [])
+            if not plan:
+                continue
+            summary = totals(plan)
+            rows.append(
+                {
+                    "project_id": project["id"],
+                    "project_name": project["name"],
+                    "stage": project["stage"],
+                    "status": project["status"],
+                    **summary,
+                }
+            )
+            for key in grand:
+                grand[key] += summary[key]
+        rows.sort(key=lambda r: -r["outstanding"])
+        return {"projects": rows, "totals": grand}
 
     def stale(self, days: int = 14, stage: str | None = None) -> list[dict[str, Any]]:
         """一定期間動いていない進行中案件を返す。追客漏れの検知に使う。
