@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 import unicodedata
 from pathlib import Path
@@ -35,8 +37,151 @@ from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
 
-# ANSI 色。パイプ出力時は無効化する。
-_COLOR = sys.stdout.isatty()
+# 文字化けの痕跡。半角カナと私用領域が多いなら、誤った文字コードで読んでいる。
+_GARBLED = re.compile(r"[\ue000-\uf8ff\uff61-\uff9f\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _japanese_score(text: str) -> float:
+    """読めた文字列がどれだけ「まともな日本語/英数」に見えるか(0.0〜1.0)。
+
+    cp932 はほぼどんなバイト列でもデコードに成功してしまうため、
+    「デコードできたか」では文字コードを判定できない。結果の中身で見る。
+    """
+    if not text:
+        return 0.0
+    return 1.0 - len(_GARBLED.findall(text)) / len(text)
+
+
+def read_user_file(path: str | Path) -> tuple[str, str]:
+    """人が用意したファイルを読む。文字コードを決め打ちしない。
+
+    Windows のメモ帳などで保存された原稿は Shift_JIS(cp932)のことがある。
+    UTF-8 決め打ちだと落ちるか化けるので、順に試す。
+    どの文字コードで読んだかを呼び出し側に返す。
+    """
+    raw = Path(path).read_bytes()
+
+    # 1. BOM があれば従う
+    for bom, encoding in (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+    ):
+        if raw.startswith(bom):
+            try:
+                return raw.decode(encoding), encoding
+            except UnicodeDecodeError:
+                break
+
+    # 2. ISO-2022-JP は全バイトが ASCII 範囲なので UTF-8 として「読めて」しまう。
+    #    エスケープシーケンスで先に見分ける。
+    if b"\x1b$" in raw:
+        try:
+            return raw.decode("iso2022_jp"), "iso2022_jp"
+        except UnicodeDecodeError:
+            pass
+
+    # 3. UTF-8 は誤検出がほぼ起きないので先に確定させる
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+
+    # 4. 日本語のレガシー文字コードは、読めた中身の妥当さで選ぶ
+    best: tuple[float, str, str] | None = None
+    for encoding in ("cp932", "euc_jp", "iso2022_jp"):
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        score = _japanese_score(text)
+        if best is None or score > best[0]:
+            best = (score, text, encoding)
+
+    if best and best[0] >= 0.95:
+        return best[1], best[2]
+
+    # 5. どれも怪しい。読める形にはするが、化けている旨を伝える
+    return raw.decode("utf-8", errors="replace"), "判別できず(一部読み取り不能)"
+
+
+def _prepare_stdout() -> None:
+    """出力で例外を出さないようにする。
+
+    エンコーディングは端末のまま変えない。Windows の日本語コンソール(cp932)で
+    強制的に UTF-8 にすると、記号どころか日本語全体が化けるため。
+    ここでは「出せない文字があっても落ちない」ことだけを保証し、
+    出せない記号は MARK 側で cp932 にもある文字へ落とす。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - 環境依存
+            pass
+
+
+def _enable_windows_ansi() -> bool:
+    """Windows コンソールで ANSI エスケープを有効にする。
+
+    有効にできないまま色を出すと、画面に `←[36m` のような文字列が並ぶ。
+    """
+    if sys.platform != "win32":  # pragma: no cover - 非 Windows
+        return True
+    try:  # pragma: no cover - Windows 依存
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # 7 = STD_OUTPUT_HANDLE, 0x0004 = ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:  # pragma: no cover - 使えなければ色を諦める
+        return False
+
+
+def _can_encode(text: str) -> bool:
+    """今の出力先がこの文字を出せるか。"""
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        text.encode(encoding)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+# 画面に出す記号。端末が出せない場合は cp932 にもある文字へ落とす。
+_FANCY_MARKS = {"tool": "▸", "ok": "✓", "ng": "✗", "bar": "█", "dash": "—"}
+_PLAIN_MARKS = {"tool": ">", "ok": "○", "ng": "×", "bar": "■", "dash": "-"}
+
+
+def _pick_marks() -> dict[str, str]:
+    if all(_can_encode(ch) for ch in _FANCY_MARKS.values()):
+        return dict(_FANCY_MARKS)
+    if all(_can_encode(ch) for ch in _PLAIN_MARKS.values()):
+        return dict(_PLAIN_MARKS)
+    return {"tool": ">", "ok": "o", "ng": "x", "bar": "#", "dash": "-"}
+
+
+_prepare_stdout()
+MARK = _pick_marks()
+
+# ANSI 色。パイプ出力時、NO_COLOR 指定時、端末が対応しない場合は無効。
+_COLOR = (
+    sys.stdout.isatty()
+    and not os.environ.get("NO_COLOR")
+    and _enable_windows_ansi()
+)
+
+
+def set_color(enabled: bool) -> None:
+    """色出力を切り替える(--no-color 用)。"""
+    global _COLOR
+    _COLOR = enabled
 
 
 def _width(text: str) -> int:
@@ -95,13 +240,13 @@ class ConsoleListener(Listener):
         preview = json.dumps(arguments, ensure_ascii=False)
         if len(preview) > 120:
             preview = preview[:117] + "..."
-        print(CYAN(f"\n  ▸ {name} {preview}"), flush=True)
+        print(CYAN(f"\n  {MARK['tool']} {name} {preview}"), flush=True)
 
     def on_tool_result(self, name: str, output: str, is_error: bool) -> None:
         head = output.splitlines()[0] if output else ""
         if len(head) > 120:
             head = head[:117] + "..."
-        mark = RED("  ✗ ") if is_error else DIM("  ✓ ")
+        mark = RED(f"  {MARK['ng']} ") if is_error else DIM(f"  {MARK['ok']} ")
         print(mark + (RED(head) if is_error else DIM(head)), flush=True)
 
     def on_notice(self, message: str) -> None:
@@ -289,7 +434,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     people = roster(args.office)
     if people:
         print(f"{ok_mark}{len(people)} 名"
-              + DIM(" — " + "、".join(f"{p.name}({p.employee_id})" for p in people)))
+              + DIM(f" {MARK['dash']} " + "、".join(f"{p.name}({p.employee_id})" for p in people)))
     else:
         print(f"{ng_mark}在籍者がいません")
         print(DIM("        python -m ai_employee hire-team"))
@@ -482,7 +627,12 @@ def cmd_candidates(args: argparse.Namespace) -> int:
 
 def cmd_check(args: argparse.Namespace) -> int:
     """原稿の表現をチェックする。"""
-    text = Path(args.file).read_text(encoding="utf-8") if args.file else args.text
+    if args.file:
+        text, encoding = read_user_file(args.file)
+        if encoding not in ("utf-8", "utf-8-sig"):
+            print(DIM(f"({args.file} を {encoding} として読みました)"))
+    else:
+        text = args.text
     result = review_copy(text)
 
     if not result["count"]:
@@ -555,14 +705,15 @@ def cmd_competitors(args: argparse.Namespace) -> int:
             return 0
         print(BOLD("\n  何社が言っているか"))
         for axis, count in report["crowded_axes"]:
-            print(f"    {_pad(axis, 24)}{'■' * count} {count} 社")
+            print(f"    {_pad(axis, 24)}{MARK['bar'] * count} {count} 社")
         if report["empty_axes"]:
             print(BOLD("\n  誰も言っていない軸"))
             print(DIM("    " + "、".join(report["empty_axes"])))
         if own:
             print(BOLD("\n  自社の得意分野との突き合わせ"))
             for axis in report["differentiators"]:
-                print(f"    {_pad(axis, 24)}" + BOLD("競合なし — 差別化の候補"))
+                print(f"    {_pad(axis, 24)}"
+                      + BOLD(f"競合なし {MARK['dash']} 差別化の候補"))
             for axis, count in report["contested_axes"]:
                 print(f"    {_pad(axis, 24)}" + DIM(f"競合 {count} 社と重なる"))
         else:
@@ -832,7 +983,7 @@ def cmd_projects(args: argparse.Namespace) -> int:
         print(BOLD(f"進行中案件 {total} 件"))
         for stage in STAGES:
             if counts[stage]:
-                bar = "█" * counts[stage]
+                bar = MARK["bar"] * counts[stage]
                 print(f"  {_pad(stage, 10)}{counts[stage]:>3}  {CYAN(bar)}")
         return 0
 
@@ -968,7 +1119,8 @@ def cmd_notes(args: argparse.Namespace) -> int:
 def cmd_templates(_: argparse.Namespace) -> int:
     print(BOLD("利用できる職種テンプレート"))
     for key, data in TEMPLATES.items():
-        print(f"  {key:<12} {data['department']}/{data['role']} — {data['mission']}")
+        print(f"  {key:<12} {data['department']}/{data['role']} "
+              f"{MARK['dash']} {data['mission']}")
     return 0
 
 
@@ -985,6 +1137,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=f"社員データの置き場 (既定: {office_root()})",
+    )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="色や記号の装飾を使わない(環境変数 NO_COLOR でも同じ)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1217,6 +1374,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "no_color", False):
+        set_color(False)
     try:
         return args.func(args)
     except (WorkspaceError, CompanyError, LandError, CompetitorError, InstagramError) as exc:

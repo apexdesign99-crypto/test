@@ -82,6 +82,32 @@ python -m ai_employee hearing <案件ID>
 
 `--thinking` を付けると社員の思考の要約も流れるので、初回はこれで挙動を見るのがおすすめです。
 
+### 文字化けする場合
+
+Windows の日本語コンソール(cp932)では、一部の記号がそのままでは出せません。
+そこで**端末が出せる記号を自動で選びます**(UTF-8 なら `✓ ✗ ▸ █`、
+cp932 なら `○ × > ■`)。端末の文字コードを勝手に UTF-8 に変えることはしません
+— 変えると記号どころか日本語全体が化けるためです。
+
+それでも崩れる場合は、装飾を外してください。
+
+```bash
+python -m ai_employee --no-color roster
+set NO_COLOR=1                        # Windows。以降ずっと無効
+export NO_COLOR=1                     # macOS / Linux
+```
+
+色が `←[36m` のような文字列として見える場合は、コンソールが ANSI に対応していません。
+Windows Terminal / PowerShell 7 を使うか、`--no-color` を付けてください。
+
+原稿ファイルの文字コードは自動判別します(UTF-8 / Shift_JIS / EUC-JP /
+ISO-2022-JP / UTF-16)。メモ帳で保存した下書きもそのまま渡せます。
+
+```bash
+python -m ai_employee check --file 下書き.md
+# (下書き.md を cp932 として読みました)
+```
+
 ### 最初に見てほしいところ
 
 実際に動かすと、机上では分からないことが見えます。特にこの3点です。
