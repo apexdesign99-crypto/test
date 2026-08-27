@@ -24,6 +24,7 @@ from .company import (
     ProjectLedger,
 )
 from .copycheck import review_copy as _review_copy
+from .land import RELAXATIONS, ZONING_TYPES, LandConditions
 from .workspace import Workspace, WorkspaceError, now
 
 # Opus 4.6 以降で使えるサーバ側 Web 検索ツール。
@@ -236,6 +237,35 @@ def build_tools(
 
     def review_copy(text: str) -> dict:
         return _review_copy(text)
+
+    def record_land(
+        project_id: str,
+        site_area: float,
+        zoning: str,
+        building_coverage: float,
+        floor_area_ratio: float,
+        road_width: float | None = None,
+        road_contact: float | None = None,
+        relaxations: list[str] | None = None,
+        note: str = "",
+    ) -> dict:
+        return ledger.record_land(
+            project_id,
+            LandConditions(
+                site_area=site_area,
+                zoning=zoning,
+                building_coverage=building_coverage,
+                floor_area_ratio=floor_area_ratio,
+                road_width=road_width,
+                road_contact=road_contact,
+                relaxations=relaxations or [],
+                note=note,
+            ),
+            by=me,
+        )
+
+    def diagnose_land(project_id: str) -> dict:
+        return ledger.diagnose_land(project_id, office)
 
     def setup_billing(project_id: str, contract_amount: int) -> dict:
         return ledger.setup_billing(project_id, contract_amount, office, by=me)
@@ -611,6 +641,53 @@ def build_tools(
                 ["text"],
             ),
             review_copy,
+        ),
+        Tool(
+            "record_land",
+            "調べた敷地条件を案件に記録する。"
+            "用途地域・建蔽率・容積率は、都市計画情報や役所で確認した値だけを入れること。"
+            "**推測して埋めてはいけない。** 分からない項目は渡さず、"
+            "何を調べる必要があるかを報告する。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "site_area": {"type": "number", "description": "敷地面積(㎡)"},
+                    "zoning": {
+                        "type": "string",
+                        "enum": list(ZONING_TYPES),
+                        "description": "用途地域(都市計画情報で確認した値)",
+                    },
+                    "building_coverage": {
+                        "type": "number",
+                        "description": "指定建蔽率(%)。緩和前の指定値。",
+                    },
+                    "floor_area_ratio": {
+                        "type": "number",
+                        "description": "指定容積率(%)",
+                    },
+                    "road_width": {"type": "number", "description": "前面道路幅員(m)"},
+                    "road_contact": {"type": "number", "description": "接道長さ(m)"},
+                    "relaxations": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": [key for key, _ in RELAXATIONS]},
+                        "description": "行政に適用を確認できた建蔽率の緩和のみ。"
+                        "確認できていないものは入れない。",
+                    },
+                    "note": {"type": "string", "description": "調査時の補足・出典"},
+                },
+                ["project_id", "site_area", "zoning", "building_coverage", "floor_area_ratio"],
+            ),
+            record_land,
+        ),
+        Tool(
+            "diagnose_land",
+            "記録済みの敷地条件から、建築面積・延床面積の上限と接道義務の判定を計算する。"
+            "計算はツール側が行うので、自分で掛け算をしないこと。"
+            "これは法適合の判断ではなく、斜線制限・日影規制・地区計画は計算していない。"
+            "結果の required_confirmations を必ず報告に含め、"
+            "disclaimer をそのまま添えること。",
+            _obj({"project_id": {"type": "string", "description": "案件 ID"}}, ["project_id"]),
+            diagnose_land,
         ),
         Tool(
             "setup_billing",

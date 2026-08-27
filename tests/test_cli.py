@@ -468,3 +468,74 @@ def test_請求計画のある案件がなければ伝える(tmp_path, capsys):
     capsys.readouterr()
     assert run(["billing"], tmp_path) == 0
     assert "請求計画のある案件がありません" in capsys.readouterr().out
+
+
+# -------------------------------------------------------------- 土地診断
+
+
+def test_単発で土地診断できる(tmp_path, capsys):
+    assert run(
+        ["land", "--site-area", "132.5", "--zoning", "第一種低層住居専用地域",
+         "--coverage", "50", "--far", "100", "--road-width", "4.0", "--road-contact", "6.2"],
+        tmp_path,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "66.25 ㎡" in out
+    assert "接道義務: 満たしている" in out
+    assert "この診断では判定していない項目" in out
+    assert "法適合の判断ではない" in out
+
+
+def test_道路幅員で容積率が制限される(tmp_path, capsys):
+    assert run(
+        ["land", "--site-area", "200", "--zoning", "商業地域",
+         "--coverage", "80", "--far", "400", "--road-width", "4.5"],
+        tmp_path,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "540.0 ㎡" in out          # 200 × 270%
+    assert "4.5m × 6/10 = 270.0%" in out
+
+
+def test_必須項目が足りなければエラー終了(tmp_path, capsys):
+    assert run(["land", "--site-area", "100"], tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "用途地域" in err
+    assert "推測しないこと" in err
+
+
+def test_案件に紐づけて診断できる(tmp_path, capsys):
+    from ai_employee.company import ProjectLedger
+
+    project = ProjectLedger(tmp_path).add("佐々木様 新築", owner="eigyo")
+    assert run(
+        ["land", "--project", project["id"], "--site-area", "132.5",
+         "--zoning", "第一種低層住居専用地域", "--coverage", "50", "--far", "100"],
+        tmp_path,
+    ) == 0
+    capsys.readouterr()
+
+    # 記録済みなので条件を指定せず再診断できる
+    assert run(["land", "--project", project["id"]], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "佐々木様 新築" in out
+    assert "66.25 ㎡" in out
+
+
+def test_敷地条件未記録の案件はエラー終了(tmp_path, capsys):
+    from ai_employee.company import ProjectLedger
+
+    project = ProjectLedger(tmp_path).add("佐々木様 新築")
+    assert run(["land", "--project", project["id"]], tmp_path) == 1
+    assert "敷地条件が未記録" in capsys.readouterr().err
+
+
+def test_緩和を指定すると要確認と明記される(tmp_path, capsys):
+    assert run(
+        ["land", "--site-area", "150", "--zoning", "商業地域", "--coverage", "80",
+         "--far", "400", "--relaxation", "corner_lot"],
+        tmp_path,
+    ) == 0
+    out = capsys.readouterr().out
+    assert "建蔽率 90.0%" in out
+    assert "行政に要確認" in out

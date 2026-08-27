@@ -28,6 +28,7 @@ from .billing import (
     with_tax,
 )
 from .config import office_root
+from .land import LandConditions, LandSettings, diagnose
 from .workspace import now
 
 # 設計事務所の標準的な案件ステージ。事務所ごとの実態に合わせて編集してよい。
@@ -119,6 +120,10 @@ class OfficeProfile:
     tax_rate: float | None = None             # 消費税率 (%)。未設定なら税込を出さない
     payment_term_days: int = DEFAULT_PAYMENT_TERM_DAYS  # 入金遅延とみなす日数
 
+    # 土地診断で使う係数と閾値。空なら一般的な既定値を使う。
+    # いずれも事務所が確認して設定する値で、法令から導いたものではない。
+    land_settings: dict[str, Any] = field(default_factory=dict)
+
     def is_configured(self) -> bool:
         """施主向けの文面を書くのに足る情報があるか。"""
         return bool(self.name.strip())
@@ -148,6 +153,10 @@ class OfficeProfile:
             encoding="utf-8",
         )
         return path
+
+    def land(self) -> LandSettings:
+        """土地診断の設定を返す。"""
+        return LandSettings.from_dict(self.land_settings)
 
     def can_estimate(self, kind: str) -> bool:
         return bool(self.unit_prices.get(kind)) and self.design_fee_rate is not None
@@ -382,6 +391,8 @@ class ProjectLedger:
             "publications": [],
             # 出来高払いの請求計画。契約後に setup_billing で作る。
             "billing": {"contract_amount": None, "plan": []},
+            # 敷地条件。人が調べた規制値だけを入れる。
+            "land": None,
             "created_at": stamp,
             "updated_at": stamp,
             "history": [
@@ -723,6 +734,71 @@ class ProjectLedger:
             "note": "ready は発信できる案件。needs_consent は先に施主の許諾が必要な案件で、"
             "許諾が取れるまで原稿を書いてはいけない。",
         }
+
+    # ------------------------------------------------------------ 土地
+
+    def record_land(
+        self, project_id: str, conditions: LandConditions, by: str = ""
+    ) -> dict[str, Any]:
+        """調べた敷地条件を案件に記録する。"""
+        conditions.validate()
+        projects = self._read()
+        for record in projects:
+            if record["id"] != project_id:
+                continue
+            stamp = now().isoformat(timespec="seconds")
+            record["land"] = {
+                "site_area": conditions.site_area,
+                "zoning": conditions.zoning,
+                "building_coverage": conditions.building_coverage,
+                "floor_area_ratio": conditions.floor_area_ratio,
+                "road_width": conditions.road_width,
+                "road_contact": conditions.road_contact,
+                "relaxations": list(conditions.relaxations),
+                "note": conditions.note.strip(),
+                "recorded_at": stamp,
+                "recorded_by": by or "unknown",
+            }
+            record["updated_at"] = stamp
+            record["history"].append(
+                {
+                    "at": stamp,
+                    "by": by or "unknown",
+                    "entry": f"敷地条件を記録: {conditions.zoning} / "
+                    f"{conditions.site_area}㎡ / 建蔽率 {conditions.building_coverage}% / "
+                    f"容積率 {conditions.floor_area_ratio}%",
+                }
+            )
+            self._write(projects)
+            return record["land"]
+        raise CompanyError(f"案件が見つかりません: {project_id}")
+
+    def diagnose_land(self, project_id: str, office: "OfficeProfile") -> dict[str, Any]:
+        """記録済みの敷地条件で土地診断を行う。"""
+        project = self.get(project_id)
+        land = project.get("land")
+        if not land:
+            raise CompanyError(
+                f"案件「{project['name']}」に敷地条件が未記録のため診断できません。"
+                f"用途地域・敷地面積・建蔽率・容積率を調べて record_land で記録してください。"
+                f"これらを推測してはいけません。"
+            )
+        conditions = LandConditions(
+            site_area=land["site_area"],
+            zoning=land["zoning"],
+            building_coverage=land["building_coverage"],
+            floor_area_ratio=land["floor_area_ratio"],
+            road_width=land.get("road_width"),
+            road_contact=land.get("road_contact"),
+            relaxations=list(land.get("relaxations", [])),
+            note=land.get("note", ""),
+        )
+        result = diagnose(conditions, office.land())
+        result["project_id"] = project["id"]
+        result["project_name"] = project["name"]
+        result["recorded_at"] = land.get("recorded_at")
+        result["recorded_by"] = land.get("recorded_by")
+        return result
 
     # ------------------------------------------------------------ 請求
 

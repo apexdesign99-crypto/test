@@ -419,3 +419,62 @@ def test_横断集計ツールが合計を返す(workspace, tmp_path):
     result = json.loads(box.run("billing_overview", {})[0])
     assert result["totals"]["total"] == 1_000_000
     assert result["totals"]["unbilled"] == 1_000_000
+
+
+# -------------------------------------------------------------- 土地診断
+
+
+def _land_box(workspace, tmp_path, allowed, land_settings=None):
+    from ai_employee.company import OfficeProfile, ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    OfficeProfile(name="A設計", land_settings=land_settings or {}).save(tmp_path)
+    ledger = ProjectLedger(tmp_path)
+    return ToolBox(workspace, allowed, ledger=ledger), ledger
+
+
+def test_敷地条件を記録して診断できる(workspace, tmp_path):
+    box, ledger = _land_box(workspace, tmp_path, ["record_land", "diagnose_land"])
+    pid = ledger.add("佐々木様 新築")["id"]
+
+    box.run("record_land", {
+        "project_id": pid, "site_area": 132.5, "zoning": "第一種低層住居専用地域",
+        "building_coverage": 50, "floor_area_ratio": 100,
+        "road_width": 4.0, "road_contact": 6.2,
+    })
+    result = json.loads(box.run("diagnose_land", {"project_id": pid})[0])
+    assert result["building_area_max"] == 66.25
+    assert result["road_check"]["passes"] is True
+
+
+def test_敷地条件未記録なら診断がエラー結果になる(workspace, tmp_path):
+    """調べていない土地の診断結果を作らせない。"""
+    box, ledger = _land_box(workspace, tmp_path, ["diagnose_land"])
+    pid = ledger.add("佐々木様 新築")["id"]
+    output, is_error = box.run("diagnose_land", {"project_id": pid})
+    assert is_error
+    assert "敷地条件が未記録" in output
+    assert "推測してはいけません" in output
+
+
+def test_診断結果に確認事項と但し書きが必ず入る(workspace, tmp_path):
+    box, ledger = _land_box(workspace, tmp_path, ["record_land", "diagnose_land"])
+    pid = ledger.add("佐々木様 新築")["id"]
+    box.run("record_land", {
+        "project_id": pid, "site_area": 150, "zoning": "商業地域",
+        "building_coverage": 80, "floor_area_ratio": 400,
+    })
+    result = json.loads(box.run("diagnose_land", {"project_id": pid})[0])
+    assert len(result["required_confirmations"]) >= 10
+    assert "法適合の判断ではない" in result["disclaimer"]
+
+
+def test_不正な用途地域はエラー結果になる(workspace, tmp_path):
+    box, ledger = _land_box(workspace, tmp_path, ["record_land"])
+    pid = ledger.add("佐々木様 新築")["id"]
+    output, is_error = box.run("record_land", {
+        "project_id": pid, "site_area": 150, "zoning": "住宅地",
+        "building_coverage": 50, "floor_area_ratio": 100,
+    })
+    assert is_error
+    assert "不正な用途地域" in output

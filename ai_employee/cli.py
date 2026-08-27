@@ -29,6 +29,7 @@ from .company import (
 )
 from .billing import BILLING_STATUSES, EXAMPLE_SCHEDULE
 from .copycheck import review_copy
+from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
 
@@ -389,6 +390,87 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def _yen(value: int | None) -> str:
     return f"{value:,} 円" if value is not None else "-"
+
+
+def _print_diagnosis(result: dict[str, Any]) -> None:
+    """診断結果を表示する。但し書きと確認事項は必ず出す。"""
+    building = result["building_area_max"]
+    floor = result["total_floor_area_max"]
+    tsubo = round(floor / (400 / 121), 1)
+
+    print(BOLD(f"{result['zoning']} / 敷地 {result['site_area']}㎡"))
+    print()
+    print(f"  建築面積の上限  {BOLD(str(building) + ' ㎡')}"
+          f"  (建蔽率 {result['building_coverage_applied']}%)")
+    print(f"  延床面積の上限  {BOLD(str(floor) + ' ㎡')}"
+          f"  (容積率 {result['floor_area_ratio_applied']}% / 約 {tsubo} 坪・容積対象)")
+    print()
+    print(DIM(f"  {result['coverage_basis']}"))
+    print(DIM(f"  {result['floor_area_basis']}"))
+
+    check = result["road_check"]
+    print()
+    if check["judged"]:
+        verdict = BOLD("満たしている") if check["passes"] else RED("満たしていない")
+        print(f"  接道義務: {verdict}")
+        print(DIM(f"    {check['basis']}"))
+    else:
+        print(DIM("  接道義務: 前面道路の情報が未入力のため判定していません。"))
+
+    if result["missing_inputs"]:
+        print(RED(f"\n  未入力の項目 {len(result['missing_inputs'])} 件"))
+        for item in result["missing_inputs"]:
+            print(RED(f"    ・{item}"))
+
+    print(BOLD(f"\n  この診断では判定していない項目 "
+               f"{len(result['required_confirmations'])} 件"))
+    print(DIM("  すべて所管行政庁・都市計画情報で確認が必要です。"))
+    for item in result["required_confirmations"]:
+        print(f"    ・{_pad(item['item'], 12)}{DIM(item['detail'])}")
+
+    print(RED(f"\n※ {result['disclaimer']}"))
+
+
+def cmd_land(args: argparse.Namespace) -> int:
+    """土地診断。案件に記録された条件、または直接指定した条件で診断する。"""
+    office = OfficeProfile.load(args.office)
+
+    if args.project:
+        ledger = ProjectLedger(args.office)
+        if args.site_area is not None:
+            ledger.record_land(
+                args.project,
+                LandConditions(
+                    site_area=args.site_area,
+                    zoning=args.zoning,
+                    building_coverage=args.coverage,
+                    floor_area_ratio=args.far,
+                    road_width=args.road_width,
+                    road_contact=args.road_contact,
+                    relaxations=args.relaxation or [],
+                    note=args.note or "",
+                ),
+            )
+        result = ledger.diagnose_land(args.project, office)
+        print(BOLD(f"[{result['project_id']}] {result['project_name']}"))
+        print(DIM(f"敷地条件の記録: {result['recorded_at'][:16]} by {result['recorded_by']}"))
+        print()
+    else:
+        result = diagnose(
+            LandConditions(
+                site_area=args.site_area,
+                zoning=args.zoning,
+                building_coverage=args.coverage,
+                floor_area_ratio=args.far,
+                road_width=args.road_width,
+                road_contact=args.road_contact,
+                relaxations=args.relaxation or [],
+            ),
+            office.land(),
+        )
+
+    _print_diagnosis(result)
+    return 0
 
 
 def cmd_billing(args: argparse.Namespace) -> int:
@@ -782,6 +864,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_office.set_defaults(func=cmd_office)
 
+    p_land = sub.add_parser(
+        "land", help="土地診断(建てられるボリュームの目安と、確認すべき論点)"
+    )
+    p_land.add_argument("--project", help="案件 ID。省略時は指定条件で単発診断する")
+    p_land.add_argument("--site-area", dest="site_area", type=float, help="敷地面積(㎡)")
+    p_land.add_argument("--zoning", choices=list(ZONING_TYPES), help="用途地域")
+    p_land.add_argument("--coverage", type=float, help="指定建蔽率 (%%)")
+    p_land.add_argument("--far", type=float, help="指定容積率 (%%)")
+    p_land.add_argument("--road-width", dest="road_width", type=float, help="前面道路幅員(m)")
+    p_land.add_argument("--road-contact", dest="road_contact", type=float, help="接道長さ(m)")
+    p_land.add_argument(
+        "--relaxation",
+        action="append",
+        choices=[key for key, _ in RELAXATIONS],
+        help="行政に適用を確認できた建蔽率の緩和(複数指定可)",
+    )
+    p_land.add_argument("--note", help="調査時の補足・出典")
+    p_land.set_defaults(func=cmd_land)
+
     p_billing = sub.add_parser("billing", help="請求状況の確認と、請求・入金の記録")
     p_billing.add_argument("--project", help="案件 ID(明細を見る/更新する)")
     p_billing.add_argument(
@@ -909,7 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (WorkspaceError, CompanyError) as exc:
+    except (WorkspaceError, CompanyError, LandError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:
