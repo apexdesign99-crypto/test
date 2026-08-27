@@ -299,3 +299,71 @@ def test_必須が揃えば提案可と表示される(tmp_path, capsys):
     capsys.readouterr()
     assert run(["hearing", project["id"]], tmp_path) == 0
     assert "提案に進めます" in capsys.readouterr().out
+
+
+# ------------------------------------------------------- マーケティング
+
+
+def seed_marketing(tmp_path):
+    from ai_employee.company import ProjectLedger
+
+    ledger = ProjectLedger(tmp_path)
+    ok = ledger.add("田中邸 新築", "田中様", "戸建住宅", by="shukyaku")
+    ledger.add("山本邸 平屋", "山本様", "戸建住宅", by="shukyaku")
+    ledger.record_consent(ok["id"], "条件付き", "施主名は伏せる。外観写真のみ。", by="marke")
+    return ok["id"]
+
+
+def test_許諾状態を確認できる(tmp_path, capsys):
+    project_id = seed_marketing(tmp_path)
+    assert run(["consent", project_id], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "条件付き" in out
+    assert "施主名は伏せる" in out
+
+
+def test_許諾を記録できる(tmp_path, capsys):
+    project_id = seed_marketing(tmp_path)
+    assert run(["consent", project_id, "--status", "許諾済"], tmp_path) == 0
+    assert "許諾済" in capsys.readouterr().out
+
+
+def test_条件なしの条件付き許諾はエラー終了(tmp_path, capsys):
+    project_id = seed_marketing(tmp_path)
+    assert run(["consent", project_id, "--status", "条件付き"], tmp_path) == 1
+    assert "条件の記載が必須" in capsys.readouterr().err
+
+
+def test_発信ネタを棚卸しできる(tmp_path, capsys):
+    seed_marketing(tmp_path)
+    assert run(["candidates"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "田中邸 新築" in out
+    assert "先に施主の許諾が必要な案件" in out
+    assert "山本邸 平屋" in out
+
+
+def test_原稿の表現をチェックできる(tmp_path, capsys):
+    assert run(["check", "--text", "地域No.1の設計事務所です"], tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "No.1" in out
+    assert "適法性の判断ではない" in out
+
+
+def test_指摘がなければ正常終了(tmp_path, capsys):
+    assert run(["check", "--text", "木の質感を生かした住まいです。"], tmp_path) == 0
+    assert "指摘はありません" in capsys.readouterr().out
+
+
+def test_ファイルからチェックできる(tmp_path, capsys):
+    draft = tmp_path / "draft.md"
+    draft.write_text("必ずご満足いただけます。", encoding="utf-8")
+    assert run(["check", "--file", str(draft)], tmp_path) == 1
+    assert "必ず" in capsys.readouterr().out
+
+
+def test_チェック対象は本文かファイルのどちらか(tmp_path):
+    with pytest.raises(SystemExit):
+        run(["check"], tmp_path)
+    with pytest.raises(SystemExit):
+        run(["check", "--text", "a", "--file", "b"], tmp_path)

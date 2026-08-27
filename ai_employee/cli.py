@@ -18,7 +18,16 @@ from typing import Any
 
 from .agent import Employee, Listener
 from .config import office_root
-from .company import KINDS, STAGES, CompanyError, OfficeProfile, ProjectLedger
+from .company import (
+    CHANNELS,
+    CONSENT_STATUSES,
+    KINDS,
+    STAGES,
+    CompanyError,
+    OfficeProfile,
+    ProjectLedger,
+)
+from .copycheck import review_copy
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
 
@@ -272,6 +281,69 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     print()
     print(DIM(f"  {result['caveat']}"))
     return 0
+
+
+def cmd_consent(args: argparse.Namespace) -> int:
+    """掲載許諾を記録・確認する。"""
+    ledger = ProjectLedger(args.office)
+    if args.status:
+        ledger.record_consent(args.project_id, args.status, args.conditions or "")
+    status = ledger.publication_status(args.project_id)
+
+    mark = BOLD if status["publishable"] else RED
+    print(BOLD(f"[{status['project_id']}] {status['project_name']}"))
+    print(f"  掲載許諾: {mark(status['consent_status'])}")
+    if status["conditions"]:
+        print(f"  条件    : {status['conditions']}")
+    print(f"  → {status['guidance']}")
+    if status["publications"]:
+        print(BOLD(f"\n  発信履歴 ({len(status['publications'])} 件)"))
+        for pub in status["publications"]:
+            url = f"  {pub['url']}" if pub["url"] else ""
+            print(f"    {pub['at'][:10]}  {_pad(pub['channel'], 16)}{pub['title']}{DIM(url)}")
+    return 0
+
+
+def cmd_candidates(args: argparse.Namespace) -> int:
+    """発信ネタの棚卸し。"""
+    result = ProjectLedger(args.office).publication_candidates(
+        channel=args.channel, kind=args.kind
+    )
+    scope = f"({args.channel} で未発信)" if args.channel else ""
+    print(BOLD(f"発信できる案件 {len(result['ready'])} 件 ") + DIM(scope))
+    for item in result["ready"]:
+        published = (
+            DIM("  既出: " + "、".join(item["published_channels"]))
+            if item["published_channels"]
+            else ""
+        )
+        print(f"  [{item['id']}] {_pad(item['name'], 24)}{item['consent_status']}{published}")
+        if item["conditions"]:
+            print(DIM(f"        条件: {item['conditions']}"))
+
+    if result["needs_consent"]:
+        print(RED(f"\n先に施主の許諾が必要な案件 {len(result['needs_consent'])} 件"))
+        for item in result["needs_consent"]:
+            print(f"  [{item['id']}] {_pad(item['name'], 24)}{RED(item['consent_status'])}")
+        print(DIM("  許諾が取れるまで、これらを題材にした原稿は書けません。"))
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """原稿の表現をチェックする。"""
+    text = Path(args.file).read_text(encoding="utf-8") if args.file else args.text
+    result = review_copy(text)
+
+    if not result["count"]:
+        print(BOLD("既知のパターンでの指摘はありません。"))
+    else:
+        print(BOLD(f"確認が要る箇所 {result['count']} 件"))
+        for flag in result["flags"]:
+            print(RED(f"  L{flag['line']} [{flag['category']}] {flag['phrase']}"))
+            print(DIM(f"      {flag['context']}"))
+            print(f"      {flag['reason']}")
+    print(DIM(f"\n※ {result['disclaimer']}"))
+    return 1 if result["count"] else 0
 
 
 def cmd_stale(args: argparse.Namespace) -> int:
@@ -574,6 +646,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_estimate.add_argument("--tsubo", type=float, help="延床面積(坪)")
     p_estimate.add_argument("--sqm", type=float, help="延床面積(㎡)")
     p_estimate.set_defaults(func=cmd_estimate)
+
+    p_consent = sub.add_parser("consent", help="掲載許諾を記録・確認する")
+    p_consent.add_argument("project_id", help="案件 ID")
+    p_consent.add_argument(
+        "--status", choices=list(CONSENT_STATUSES), help="許諾状態を記録する"
+    )
+    p_consent.add_argument("--conditions", help="条件付きの場合の条件")
+    p_consent.set_defaults(func=cmd_consent)
+
+    p_candidates = sub.add_parser("candidates", help="発信ネタを棚卸しする")
+    p_candidates.add_argument(
+        "--channel", choices=list(CHANNELS), help="このチャネルで未発信のものに絞る"
+    )
+    p_candidates.add_argument("--kind", choices=list(KINDS), help="用途種別で絞る")
+    p_candidates.set_defaults(func=cmd_candidates)
+
+    p_check = sub.add_parser("check", help="原稿の表現をチェックする")
+    check_source = p_check.add_mutually_exclusive_group(required=True)
+    check_source.add_argument("--file", help="チェックするファイル")
+    check_source.add_argument("--text", help="チェックする本文")
+    p_check.set_defaults(func=cmd_check)
 
     p_stale = sub.add_parser("stale", help="追客が止まっている案件を洗い出す")
     p_stale.add_argument("--days", type=int, default=14, help="何日以上動いていないか(既定 14)")

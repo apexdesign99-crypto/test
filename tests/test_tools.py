@@ -267,3 +267,90 @@ def test_ヒアリング状況ツールが提案可否を返す(workspace, tmp_p
 
     ledger.record_hearing(pid, {k: "確認済み" for k in HEARING_REQUIRED})
     assert json.loads(box.run("hearing_gaps", {"project_id": pid})[0])["ready_for_proposal"] is True
+
+
+# ------------------------------------------------------- マーケティング
+
+
+def test_許諾のない案件の発信記録はエラー結果になる(workspace, tmp_path):
+    """ツール経由でも、許諾を取らずに出したことにはできない。"""
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["log_publication"], ledger=ledger)
+    pid = ledger.add("田中邸 新築")["id"]
+
+    output, is_error = box.run(
+        "log_publication", {"project_id": pid, "channel": "Instagram", "title": "投稿"}
+    )
+    assert is_error
+    assert "掲載許諾が「未確認」" in output
+
+
+def test_許諾状態ツールが指示文を返す(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["publication_status", "record_consent"], ledger=ledger)
+    pid = ledger.add("田中邸 新築")["id"]
+
+    before = json.loads(box.run("publication_status", {"project_id": pid})[0])
+    assert before["publishable"] is False
+
+    box.run(
+        "record_consent",
+        {"project_id": pid, "status": "条件付き", "conditions": "施主名は伏せる"},
+    )
+    after = json.loads(box.run("publication_status", {"project_id": pid})[0])
+    assert after["publishable"] is True
+    assert "施主名は伏せる" in after["guidance"]
+
+
+def test_条件なしの条件付き許諾はエラー結果になる(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["record_consent"], ledger=ledger)
+    pid = ledger.add("田中邸 新築")["id"]
+    output, is_error = box.run(
+        "record_consent", {"project_id": pid, "status": "条件付き"}
+    )
+    assert is_error
+    assert "条件の記載が必須" in output
+
+
+def test_ネタ棚卸しツールが許諾で仕分ける(workspace, tmp_path):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    ledger = ProjectLedger(tmp_path)
+    box = ToolBox(workspace, ["publication_candidates"], ledger=ledger)
+    ok = ledger.add("許諾済の案件")
+    ledger.add("未確認の案件")
+    ledger.record_consent(ok["id"], "許諾済")
+
+    result = json.loads(box.run("publication_candidates", {})[0])
+    assert [p["name"] for p in result["ready"]] == ["許諾済の案件"]
+    assert [p["name"] for p in result["needs_consent"]] == ["未確認の案件"]
+
+
+def test_表現チェックツールが指摘と免責を返す(workspace, tmp_path):
+    from ai_employee.tools import ToolBox
+
+    box = ToolBox(workspace, ["review_copy"])
+    result = json.loads(
+        box.run("review_copy", {"text": "地域No.1の設計事務所です"})[0]
+    )
+    assert result["count"] == 1
+    assert "適法性の判断ではない" in result["disclaimer"]
+
+
+def test_空の原稿チェックはエラー結果になる(workspace):
+    from ai_employee.tools import ToolBox
+
+    output, is_error = ToolBox(workspace, ["review_copy"]).run("review_copy", {"text": "  "})
+    assert is_error
+    assert "原稿が空" in output

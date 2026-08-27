@@ -79,10 +79,13 @@ def test_BIM担当は法規を断定しないよう指示される():
     assert "Revit" in prompt
 
 
-def test_マーケ担当は個人情報と優良誤認を戒められる():
+def test_マーケ担当は許諾確認と表現チェックを義務づけられる():
     prompt = build_profile("marke", "マーケ AI", "marketing").system_prompt()
-    assert "掲載許諾" in prompt
-    assert "優良誤認" in prompt
+    assert "publication_status" in prompt
+    assert "匿名化しても原稿を書かない" in prompt
+    assert "review_copy" in prompt
+    # チェックを通ったことを「問題なし」と報告させない
+    assert "適法性の判断ではない" in prompt
 
 
 def test_system_prompt_に揮発情報を含めない():

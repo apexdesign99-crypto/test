@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .company import (
+    CHANNELS,
+    CONSENT_STATUSES,
     HEARING_ITEMS,
     HEARING_KEYS,
     KINDS,
@@ -20,6 +22,7 @@ from .company import (
     OfficeProfile,
     ProjectLedger,
 )
+from .copycheck import review_copy as _review_copy
 from .workspace import Workspace, WorkspaceError, now
 
 # Opus 4.6 以降で使えるサーバ側 Web 検索ツール。
@@ -214,6 +217,24 @@ def build_tools(
 
     def hearing_gaps(project_id: str) -> dict:
         return ledger.hearing_gaps(project_id)
+
+    def record_consent(project_id: str, status: str, conditions: str = "") -> dict:
+        updated = ledger.record_consent(project_id, status, conditions, by=me)
+        return {"id": updated["id"], "consent": updated["consent"]}
+
+    def publication_status(project_id: str) -> dict:
+        return ledger.publication_status(project_id)
+
+    def log_publication(
+        project_id: str, channel: str, title: str, url: str = ""
+    ) -> dict:
+        return ledger.log_publication(project_id, channel, title, url, by=me)
+
+    def publication_candidates(channel: str | None = None, kind: str | None = None) -> dict:
+        return ledger.publication_candidates(channel=channel, kind=kind)
+
+    def review_copy(text: str) -> dict:
+        return _review_copy(text)
 
     def estimate_cost(
         kind: str,
@@ -475,6 +496,90 @@ def build_tools(
             "プラン提案・見積の話をする前に必ず確認すること。",
             _obj({"project_id": {"type": "string", "description": "案件 ID"}}, ["project_id"]),
             hearing_gaps,
+        ),
+        Tool(
+            "publication_status",
+            "この案件を発信してよいか、掲載許諾の状態と条件を返す。"
+            "施工事例・SNS 投稿・記事など、案件を題材にした原稿を書く前に必ず呼ぶこと。"
+            "許諾が未確認または不可なら、原稿を書いてはいけない。",
+            _obj({"project_id": {"type": "string", "description": "案件 ID"}}, ["project_id"]),
+            publication_status,
+        ),
+        Tool(
+            "record_consent",
+            "施主から得た掲載許諾を記録する。施主に確認した事実だけを記録すること。"
+            "確認していない許諾を「許諾済」にしてはいけない。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "status": {
+                        "type": "string",
+                        "enum": list(CONSENT_STATUSES),
+                        "description": "許諾の状態",
+                    },
+                    "conditions": {
+                        "type": "string",
+                        "description": "条件付きの場合の条件(必須)。"
+                        "例: 施主名は伏せる、外観写真のみ、所在地は市区まで",
+                    },
+                },
+                ["project_id", "status"],
+            ),
+            record_consent,
+        ),
+        Tool(
+            "log_publication",
+            "案件を発信したことを記録する。どのチャネルで何を出したかが残り、"
+            "publication_candidates での重複を防げる。許諾のない案件には記録できない。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    "channel": {
+                        "type": "string",
+                        "enum": list(CHANNELS),
+                        "description": "発信チャネル",
+                    },
+                    "title": {"type": "string", "description": "発信物のタイトル"},
+                    "url": {"type": "string", "description": "公開 URL(あれば)"},
+                },
+                ["project_id", "channel", "title"],
+            ),
+            log_publication,
+        ),
+        Tool(
+            "publication_candidates",
+            "発信ネタの棚卸し。許諾があってまだ出していない案件(ready)と、"
+            "先に施主の許諾が必要な案件(needs_consent)に分けて返す。"
+            "ネタを探すときは推測せずこれを使うこと。",
+            _obj(
+                {
+                    "channel": {
+                        "type": "string",
+                        "enum": list(CHANNELS),
+                        "description": "このチャネルで未発信のものに絞る",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": list(KINDS),
+                        "description": "用途種別で絞る",
+                    },
+                },
+                [],
+            ),
+            publication_candidates,
+        ),
+        Tool(
+            "review_copy",
+            "原稿の表現をチェックし、確認が要る箇所を返す。"
+            "最上級・断定・比較優位の表現、個人が特定される情報、裏付けが要る数値を拾う。"
+            "社外に出る原稿を提示する前に必ず自分の原稿を通し、指摘された箇所を直すか、"
+            "直せない理由を報告に書くこと。"
+            "これは適法性の判断ではなく、既知パターンの機械的チェックである。",
+            _obj(
+                {"text": {"type": "string", "description": "チェックする原稿の全文"}},
+                ["text"],
+            ),
+            review_copy,
         ),
         Tool(
             "estimate_cost",

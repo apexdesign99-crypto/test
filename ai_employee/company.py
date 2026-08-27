@@ -68,6 +68,14 @@ HEARING_LABELS = {key: label for key, label, _ in HEARING_ITEMS}
 HEARING_REQUIRED = tuple(key for key, _, required in HEARING_ITEMS if required)
 
 
+# 施主からの掲載許諾。未確認のまま事例を公開するのは事故なので、
+# 「不明」ではなく明示的な状態として持つ。
+CONSENT_STATUSES = ("未確認", "許諾済", "条件付き", "不可")
+
+# 発信チャネル。
+CHANNELS = ("HP施工事例", "Instagram", "ブログ", "ニュースレター", "プレスリリース", "その他")
+
+
 class CompanyError(RuntimeError):
     """案件台帳の操作に失敗した。"""
 
@@ -340,6 +348,10 @@ class ProjectLedger:
             "next_due": None,
             # ヒアリング結果。未記入の項目は「未確認」であることが機械的に分かる。
             "requirements": {},
+            # 掲載許諾。既定は「未確認」——確認しないと公開できない状態から始める。
+            "consent": {"status": "未確認", "conditions": "", "at": None, "by": None},
+            # 発信履歴。どの案件をどのチャネルで出したかを残す。
+            "publications": [],
             "created_at": stamp,
             "updated_at": stamp,
             "history": [
@@ -513,6 +525,173 @@ class ProjectLedger:
             "missing": missing,
             "missing_required": missing_required,
             "ready_for_proposal": not missing_required,
+        }
+
+    def record_consent(
+        self,
+        project_id: str,
+        status: str,
+        conditions: str = "",
+        by: str = "",
+    ) -> dict[str, Any]:
+        """施主からの掲載許諾を記録する。
+
+        「条件付き」なら条件の記載を必須にする。条件を空のまま条件付きにすると、
+        後から何が許されているのか誰にも分からなくなるため。
+        """
+        if status not in CONSENT_STATUSES:
+            raise CompanyError(
+                f"不正な許諾状態です: {status} (選択肢: {'/'.join(CONSENT_STATUSES)})"
+            )
+        if status == "条件付き" and not conditions.strip():
+            raise CompanyError(
+                "「条件付き」の場合は条件の記載が必須です"
+                "(例: 施主名は伏せる、外観写真のみ、所在地は市区まで)"
+            )
+
+        projects = self._read()
+        for project in projects:
+            if project["id"] != project_id:
+                continue
+            stamp = now().isoformat(timespec="seconds")
+            before = (project.get("consent") or {}).get("status", "未確認")
+            project["consent"] = {
+                "status": status,
+                "conditions": conditions.strip(),
+                "at": stamp,
+                "by": by or "unknown",
+            }
+            project["updated_at"] = stamp
+            entry = f"掲載許諾を記録: {before} → {status}"
+            if conditions.strip():
+                entry += f"(条件: {conditions.strip()})"
+            project["history"].append({"at": stamp, "by": by or "unknown", "entry": entry})
+            self._write(projects)
+            return project
+        raise CompanyError(f"案件が見つかりません: {project_id}")
+
+    def publication_status(self, project_id: str) -> dict[str, Any]:
+        """この案件を発信してよいか、条件は何かを返す。記事を書く前の関門。"""
+        project = self.get(project_id)
+        consent = project.get("consent") or {"status": "未確認", "conditions": ""}
+        status = consent.get("status", "未確認")
+        publishable = status in ("許諾済", "条件付き")
+
+        if status == "許諾済":
+            guidance = "掲載許諾を得ている。事務所情報の範囲で発信してよい。"
+        elif status == "条件付き":
+            guidance = (
+                f"条件付きで許諾されている。次の条件を必ず守ること: {consent['conditions']}"
+            )
+        elif status == "不可":
+            guidance = (
+                "施主が掲載を拒否している。この案件を題材にした原稿を書いてはいけない。"
+                "匿名化しても書かない。"
+            )
+        else:
+            guidance = (
+                "掲載許諾が未確認。原稿を書く前に施主の許諾を得る必要がある。"
+                "許諾が取れるまで、この案件を特定できる原稿を書いてはいけない。"
+                "まず許諾確認の依頼文を用意すること。"
+            )
+
+        return {
+            "project_id": project["id"],
+            "project_name": project["name"],
+            "consent_status": status,
+            "conditions": consent.get("conditions", ""),
+            "publishable": publishable,
+            "guidance": guidance,
+            "publications": project.get("publications", []),
+        }
+
+    def log_publication(
+        self,
+        project_id: str,
+        channel: str,
+        title: str,
+        url: str = "",
+        by: str = "",
+    ) -> dict[str, Any]:
+        """発信したことを記録する。許諾のない案件は記録できない。"""
+        if channel not in CHANNELS:
+            raise CompanyError(
+                f"不正なチャネルです: {channel} (選択肢: {'/'.join(CHANNELS)})"
+            )
+        if not title.strip():
+            raise CompanyError("発信物のタイトルは必須です")
+
+        status = self.publication_status(project_id)
+        if not status["publishable"]:
+            raise CompanyError(
+                f"掲載許諾が「{status['consent_status']}」のため発信を記録できません。"
+                f"{status['guidance']}"
+            )
+
+        projects = self._read()
+        for project in projects:
+            if project["id"] != project_id:
+                continue
+            stamp = now().isoformat(timespec="seconds")
+            record = {
+                "at": stamp,
+                "channel": channel,
+                "title": title.strip(),
+                "url": url.strip(),
+                "by": by or "unknown",
+            }
+            project.setdefault("publications", []).append(record)
+            project["updated_at"] = stamp
+            project["history"].append(
+                {"at": stamp, "by": by or "unknown", "entry": f"{channel} で発信: {title.strip()}"}
+            )
+            self._write(projects)
+            return record
+        raise CompanyError(f"案件が見つかりません: {project_id}")
+
+    def publication_candidates(
+        self, channel: str | None = None, kind: str | None = None
+    ) -> dict[str, Any]:
+        """発信ネタの棚卸し。
+
+        許諾があり、まだそのチャネルで出していない案件が「書けるネタ」。
+        許諾が未確認のものは「先に許諾を取るべき案件」として別に返す。
+        """
+        if channel is not None and channel not in CHANNELS:
+            raise CompanyError(f"不正なチャネルです: {channel}")
+        if kind is not None and kind not in KINDS:
+            raise CompanyError(f"不正な用途種別です: {kind}")
+
+        ready, needs_consent = [], []
+        for project in self._read():
+            if kind and project.get("kind") != kind:
+                continue
+            consent = (project.get("consent") or {}).get("status", "未確認")
+            if consent == "不可":
+                continue
+            published = {p["channel"] for p in project.get("publications", [])}
+            if channel and channel in published:
+                continue
+            summary = {
+                "id": project["id"],
+                "name": project["name"],
+                "kind": project.get("kind"),
+                "stage": project.get("stage"),
+                "consent_status": consent,
+                "conditions": (project.get("consent") or {}).get("conditions", ""),
+                "published_channels": sorted(published),
+            }
+            if consent in ("許諾済", "条件付き"):
+                ready.append(summary)
+            else:
+                needs_consent.append(summary)
+
+        return {
+            "channel": channel,
+            "ready": ready,
+            "needs_consent": needs_consent,
+            "note": "ready は発信できる案件。needs_consent は先に施主の許諾が必要な案件で、"
+            "許諾が取れるまで原稿を書いてはいけない。",
         }
 
     def stale(self, days: int = 14, stage: str | None = None) -> list[dict[str, Any]]:
