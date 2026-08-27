@@ -173,3 +173,35 @@ def test_期間で絞り込める(ledger):
     ledger.add("A", source="HP問い合わせ")
     assert ledger.by_source(since="2000-01-01")[0]["total"] == 1
     assert ledger.by_source(since="2999-01-01") == []
+
+
+# ------------------------------------------------------------ 準備状況
+
+
+def test_未設定なら止まる業務が列挙される():
+    checks = {c["capability"]: c for c in OfficeProfile().readiness()}
+    assert checks["施主向けの文面"]["ok"] is False
+    assert checks["概算の算定"]["ok"] is False
+    assert checks["請求計画"]["ok"] is False
+    assert checks["税込金額"]["ok"] is False
+    # 土地診断は既定値があるので設定なしでも動く
+    assert checks["土地診断"]["ok"] is True
+
+
+def test_設定すればOKになる():
+    office = OfficeProfile(
+        name="A設計",
+        unit_prices={"戸建住宅": [80, 100]},
+        design_fee_rate=10,
+        billing_schedule=[{"label": "契約金", "ratio": 100, "stage": "設計契約"}],
+        tax_rate=10,
+    )
+    assert all(c["ok"] for c in office.readiness())
+
+
+def test_どの職種が影響を受けるか分かる():
+    for check in OfficeProfile().readiness():
+        assert check["roles"], check["capability"]
+        if not check["ok"]:
+            assert check["missing"]
+            assert check["fix"].startswith("office ")

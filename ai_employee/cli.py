@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent import Employee, Listener
-from .config import office_root
+from .config import DEFAULT_MODEL, office_root
 from .company import (
     CHANNELS,
     CONSENT_STATUSES,
@@ -205,6 +205,113 @@ def _parse_billing_schedule(raw: str) -> list[dict[str, Any]]:
     if total != 100:
         raise ValueError(f"配分割合の合計が {total}% です。100% にしてください。")
     return schedule
+
+
+def _check_credentials() -> tuple[bool, str]:
+    """認証情報の有無を調べる。鍵そのものは絶対に表示しない。"""
+    import os
+
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        if os.environ.get(name):
+            return True, f"環境変数 {name} が設定されています"
+    profile_dir = Path.home() / ".config" / "anthropic"
+    if profile_dir.is_dir() and any(profile_dir.iterdir()):
+        return True, f"認証プロファイル({profile_dir})が見つかりました"
+    return False, "認証情報が見つかりません"
+
+
+def _check_api() -> tuple[bool, str]:
+    """最小のリクエストを 1 回だけ投げて疎通を確認する。"""
+    try:
+        import anthropic
+    except ImportError:
+        return False, "anthropic パッケージが未インストールです(pip install -e .)"
+
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=DEFAULT_MODEL,
+            max_tokens=16,
+            messages=[{"role": "user", "content": "ok とだけ返してください"}],
+        )
+        used = getattr(response.usage, "output_tokens", "?")
+        return True, f"{DEFAULT_MODEL} に接続できました(出力 {used} トークン)"
+    except Exception as exc:  # noqa: BLE001 - 種類を問わず理由を見せたい
+        return False, f"{type(exc).__name__}: {str(exc)[:160]}"
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """初回実行の前に、足りないものと次の一手を示す。"""
+    ok_mark, ng_mark = BOLD("  OK "), RED("  要対応 ")
+    problems: list[str] = []
+
+    print(BOLD("1. 実行環境"))
+    print(f"{ok_mark}Python {sys.version.split()[0]}")
+    try:
+        import anthropic
+
+        print(f"{ok_mark}anthropic {anthropic.__version__}")
+    except ImportError:
+        print(f"{ng_mark}anthropic パッケージが未インストール")
+        problems.append("pip install -e .")
+
+    print(BOLD("\n2. 認証情報"))
+    has_credentials, detail = _check_credentials()
+    print((ok_mark if has_credentials else ng_mark) + detail)
+    if not has_credentials:
+        problems.append('export ANTHROPIC_API_KEY=sk-ant-...  (または ant auth login)')
+
+    print(BOLD("\n3. API 疎通"))
+    if args.skip_api:
+        print(DIM("  --skip-api が指定されたため確認していません"))
+    elif not has_credentials:
+        print(DIM("  認証情報がないため確認していません"))
+    else:
+        api_ok, detail = _check_api()
+        print((ok_mark if api_ok else ng_mark) + detail)
+        if not api_ok:
+            problems.append("API に接続できません。上のエラー内容を確認してください")
+
+    print(BOLD("\n4. 事務所プロフィール"))
+    office = OfficeProfile.load(args.office)
+    for check in office.readiness():
+        if check["ok"]:
+            print(f"{ok_mark}{_pad(check['capability'], 16)}" + DIM(f"({check['roles']})"))
+        else:
+            print(f"{ng_mark}{_pad(check['capability'], 16)}" + DIM(f"({check['roles']})"))
+            print(DIM(f"        未設定: {check['missing']}"))
+            print(DIM(f"        python -m ai_employee {check['fix']}"))
+            problems.append(f"{check['capability']}: 事務所プロフィールの設定")
+
+    print(BOLD("\n5. 在籍者"))
+    people = roster(args.office)
+    if people:
+        print(f"{ok_mark}{len(people)} 名"
+              + DIM(" — " + "、".join(f"{p.name}({p.employee_id})" for p in people)))
+    else:
+        print(f"{ng_mark}在籍者がいません")
+        print(DIM("        python -m ai_employee hire-team"))
+        problems.append("社員の採用")
+
+    print(BOLD("\n6. 案件台帳"))
+    ledger = ProjectLedger(args.office)
+    active = ledger.list(status="active")
+    total = ledger.list(status="all")
+    print(f"{ok_mark}進行中 {len(active)} 件 / 全 {len(total)} 件"
+          + DIM(f"  ({ledger.path})"))
+
+    print()
+    if problems:
+        print(RED(f"対応が必要な項目が {len(problems)} 件あります:"))
+        for item in problems:
+            print(RED(f"  ・{item}"))
+        print(DIM("\n未設定のままでも社員は動きますが、"
+                  "該当する業務は「できない」と報告して止まります(推測で埋めない設計のため)。"))
+        return 1
+
+    print(BOLD("すべて揃っています。最初の依頼を出せます:"))
+    print('  python -m ai_employee ask --id shukyaku "HPから問い合わせが入りました。…"')
+    return 0
 
 
 def cmd_office(args: argparse.Namespace) -> int:
@@ -819,6 +926,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_hire.add_argument("--web", action="store_true", help="Web 検索の権限を付与")
     p_hire.add_argument("--force", action="store_true", help="既存社員を上書き")
     p_hire.set_defaults(func=cmd_hire)
+
+    p_doctor = sub.add_parser(
+        "doctor", help="初回実行の前に、足りないものと次の一手を確認する"
+    )
+    p_doctor.add_argument(
+        "--skip-api", action="store_true", help="API 疎通の確認を省略する"
+    )
+    p_doctor.set_defaults(func=cmd_doctor)
 
     p_office = sub.add_parser(
         "office", help="事務所プロフィールを設定する(施主向け文面の前提になる)"

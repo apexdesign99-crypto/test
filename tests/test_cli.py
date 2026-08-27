@@ -539,3 +539,45 @@ def test_緩和を指定すると要確認と明記される(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "建蔽率 90.0%" in out
     assert "行政に要確認" in out
+
+
+# ------------------------------------------------------------ 事前チェック
+
+
+def test_未設定なら対応項目を挙げてエラー終了(tmp_path, capsys):
+    assert run(["doctor", "--skip-api"], tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "在籍者がいません" in out
+    assert "hire-team" in out
+    assert "対応が必要な項目" in out
+    # API 疎通は認証情報がなければ試さない
+    assert "認証情報がないため確認していません" in out or "--skip-api" in out
+
+
+def test_未設定の設定には次に打つコマンドが出る(tmp_path, capsys):
+    run(["doctor", "--skip-api"], tmp_path)
+    out = capsys.readouterr().out
+    assert "--unit-prices" in out
+    assert "--billing-schedule" in out
+
+
+def test_すべて揃えば残るのは認証だけ(tmp_path, capsys, monkeypatch):
+    run(["office", "--name", "A設計", "--unit-prices", "戸建住宅:80-100",
+         "--design-fee-rate", "10", "--tax-rate", "10",
+         "--billing-schedule", "契約金:100:設計契約"], tmp_path)
+    run(["hire-team"], tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-for-test")
+    capsys.readouterr()
+
+    assert run(["doctor", "--skip-api"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "すべて揃っています" in out
+    assert "dummy-for-test" not in out  # 鍵そのものは表示しない
+
+
+def test_APIキーは表示されない(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret-value")
+    run(["doctor", "--skip-api"], tmp_path)
+    captured = capsys.readouterr()
+    assert "sk-ant-secret-value" not in captured.out + captured.err
+    assert "ANTHROPIC_API_KEY が設定されています" in captured.out

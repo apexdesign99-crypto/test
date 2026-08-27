@@ -154,6 +154,59 @@ class OfficeProfile:
         )
         return path
 
+    def readiness(self) -> list[dict[str, Any]]:
+        """どの業務が今すぐ動かせるかを返す。
+
+        設定が足りないと、社員はその業務を「できない」と報告して止まる
+        (推測で埋めない設計のため)。何が止まるのかを先に見せる。
+        """
+        checks: list[dict[str, Any]] = []
+
+        def add(capability: str, roles: str, ok: bool, missing: str, fix: str) -> None:
+            checks.append(
+                {"capability": capability, "roles": roles, "ok": ok,
+                 "missing": missing, "fix": fix}
+            )
+
+        add(
+            "施主向けの文面",
+            "集客・営業・マーケ",
+            self.is_configured(),
+            "事務所名(未設定だと事務所名・エリア・料金・日程を書けない)",
+            'office --name "○○設計事務所" --areas "東京23区,川崎市" '
+            '--consultation-flow "お問い合わせ,初回相談,現地調査,プラン提案,設計契約"',
+        )
+        add(
+            "概算の算定",
+            "営業",
+            bool(self.unit_prices) and self.design_fee_rate is not None,
+            "坪単価と設計監理料率(未設定だと概算金額を出せない)",
+            'office --unit-prices "戸建住宅:80-100" --design-fee-rate 10 --design-fee-minimum 300',
+        )
+        add(
+            "請求計画",
+            "事務",
+            bool(self.billing_schedule),
+            "出来高払いの配分(未設定だと請求計画を作れない)",
+            'office --billing-schedule "契約金:30:設計契約,基本設計完了:30:基本設計,'
+            '実施設計完了:30:実施設計,引渡:10:竣工"',
+        )
+        add(
+            "税込金額",
+            "事務",
+            self.tax_rate is not None,
+            "消費税率(未設定だと税込を算出しない)",
+            "office --tax-rate 10",
+        )
+        add(
+            "土地診断",
+            "土地診断",
+            True,  # 既定値があるので設定なしでも動く
+            "",
+            "係数を変えるなら office.json の land_settings を編集",
+        )
+        return checks
+
     def land(self) -> LandSettings:
         """土地診断の設定を返す。"""
         return LandSettings.from_dict(self.land_settings)
