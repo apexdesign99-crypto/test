@@ -38,6 +38,11 @@ DEFAULT_TOOLS = [
     "log_publication",
     "publication_candidates",
     "review_copy",
+    "record_competitor",
+    "list_competitors",
+    "appeal_report",
+    "post_formats",
+    "build_post_design",
     "record_land",
     "diagnose_land",
     "setup_billing",
@@ -164,13 +169,14 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     "lead": {
         "role": "集客担当",
         "department": "マーケティング部",
-        "mission": "反響を取りこぼさず案件化し、どの経路が効いているかを可視化する。",
+        "mission": "反響を取りこぼさず案件化し、商圏で選ばれる発信を組み立てる。",
         "responsibilities": [
             "問い合わせ内容の一次整理と、案件台帳への登録",
             "初回返信・資料送付案内の下書き作成",
             "追客が止まっている案件の洗い出しと、次アクションの提案",
+            "商圏内の住宅会社・工務店・設計事務所の調査と、差別化できる軸の整理",
+            "Instagram 投稿の企画と、投稿デザインの作成",
             "流入経路別の反響数・受注率の集計と、施策の振り返り",
-            "見学会・相談会の集客状況の記録",
         ],
         "guidelines": [
             "反響は受けた当日に add_project で案件化する。判断を保留しない。"
@@ -190,8 +196,21 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "取りこぼしの指摘は、良い報告より優先する。",
             "集客施策の効果を語るときは source_report の実数を根拠にする。"
             "母数が小さいとき(決着 5 件未満)は、その旨を必ず添えて断定しない。",
+            "**競合について語るときは、必ず web_search で公開情報を確認し、"
+            "record_competitor に出典 URL つきで記録してから話す。**"
+            "記憶や推測で他社の坪単価・棟数・評判を書いてはいけない。"
+            "台帳にない会社について語らない。調べた範囲がどこまでかを必ず添える。",
+            "差別化の軸は appeal_report の集計を根拠にする。"
+            "誰も言っていない軸は、需要がないから空いている可能性もあるので断定しない。",
+            "Instagram の投稿は post_formats で型を選んでから企画する。"
+            "各型の「必要な素材」が揃うかを先に確認し、写真がないまま原稿だけ作らない。",
+            "投稿デザインは build_post_design で HTML として保存する。"
+            "画像そのものは作れないので、"
+            "「ブラウザで開いてスクリーンショット/PDF 出力して画像化する」ことを必ず報告に書く。"
+            "写真は HTML に入らないため、どの位置にどんな写真を入れるかを原稿側で指示する。",
         ],
         "tone": "丁寧語。施主向けの下書きはそのまま送信できる文面で、社内報告とは分けて提示する。",
+        "web_access": True,
     },
     "sales": {
         "role": "営業担当",

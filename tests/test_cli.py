@@ -581,3 +581,73 @@ def test_APIキーは表示されない(tmp_path, capsys, monkeypatch):
     captured = capsys.readouterr()
     assert "sk-ant-secret-value" not in captured.out + captured.err
     assert "ANTHROPIC_API_KEY が設定されています" in captured.out
+
+
+# ------------------------------------------------ 競合調査と Instagram
+
+
+def seed_competitors(tmp_path):
+    from ai_employee.competitor import CompetitorLedger
+
+    run(["office", "--name", "アペックス設計事務所",
+         "--specialties", "デザイン性,自然素材"], tmp_path)
+    ledger = CompetitorLedger(tmp_path)
+    ledger.record("A工務店", "愛知県一宮市", ["https://example.com/a"], "工務店",
+                  ["価格の安さ", "高性能(断熱・気密)"], instagram="@a", followers=3200,
+                  by="shukyaku")
+    ledger.record("C設計室", "岐阜県岐阜市", ["https://example.com/c"], "設計事務所",
+                  ["デザイン性"], by="shukyaku")
+
+
+def test_競合を一覧できる(tmp_path, capsys):
+    seed_competitors(tmp_path)
+    capsys.readouterr()
+    assert run(["competitors"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "A工務店" in out
+    assert "3,200フォロワー" in out
+    assert "https://example.com/a" in out  # 出典を必ず表示する
+
+
+def test_商圏と業態で絞れる(tmp_path, capsys):
+    seed_competitors(tmp_path)
+    capsys.readouterr()
+    assert run(["competitors", "--area", "岐阜"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "C設計室" in out and "A工務店" not in out
+
+
+def test_訴求軸の集計に差別化候補が出る(tmp_path, capsys):
+    seed_competitors(tmp_path)
+    capsys.readouterr()
+    assert run(["competitors", "--axes"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "価格の安さ" in out
+    assert "自然素材" in out and "競合なし" in out
+    assert "デザイン性" in out and "重なる" in out
+    assert "判断材料であって結論ではない" in out
+
+
+def test_競合未登録なら集計は促しを出す(tmp_path, capsys):
+    assert run(["competitors", "--axes"], tmp_path) == 0
+    assert "1 社も登録されていません" in capsys.readouterr().out
+
+
+def test_投稿の型を一覧できる(tmp_path, capsys):
+    assert run(["post"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "施工事例カルーセル" in out
+    assert "木質・ナチュラル" in out
+
+
+def test_型の詳細に必要な素材が出る(tmp_path, capsys):
+    assert run(["post", "--format", "works"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "1枚目のフック" in out
+    assert "必要な素材" in out
+    assert "外観写真" in out
+
+
+def test_不正な型は引数解析で弾かれる(tmp_path):
+    with pytest.raises(SystemExit):
+        run(["post", "--format", "バズる投稿"], tmp_path)

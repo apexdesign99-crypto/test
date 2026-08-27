@@ -478,3 +478,100 @@ def test_不正な用途地域はエラー結果になる(workspace, tmp_path):
     })
     assert is_error
     assert "不正な用途地域" in output
+
+
+# ------------------------------------------------ 競合調査と Instagram
+
+
+def _lead_box(workspace, tmp_path, allowed, specialties=None):
+    from ai_employee.company import OfficeProfile, ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    OfficeProfile(
+        name="アペックス設計事務所", specialties=specialties or []
+    ).save(tmp_path)
+    return ToolBox(workspace, allowed, ledger=ProjectLedger(tmp_path))
+
+
+def test_出典なしの競合登録はエラー結果になる(workspace, tmp_path):
+    """ツール経由でも、記憶で他社の情報を書けない。"""
+    box = _lead_box(workspace, tmp_path, ["record_competitor"])
+    output, is_error = box.run(
+        "record_competitor", {"name": "A工務店", "area": "愛知県一宮市", "sources": []}
+    )
+    assert is_error
+    assert "出典" in output
+    assert "推測で競合の情報を登録してはいけません" in output
+
+
+def test_競合を登録して一覧できる(workspace, tmp_path):
+    box = _lead_box(workspace, tmp_path, ["record_competitor", "list_competitors"])
+    box.run("record_competitor", {
+        "name": "A工務店", "area": "愛知県一宮市",
+        "sources": ["https://example.com/a"], "company_type": "工務店",
+        "appeal_axes": ["価格の安さ"],
+    })
+    result = json.loads(box.run("list_competitors", {"area": "愛知"})[0])
+    assert result["count"] == 1
+    assert result["competitors"][0]["researched_by"] == workspace.employee_id
+
+
+def test_訴求軸の集計が自社の得意分野と突き合わされる(workspace, tmp_path):
+    box = _lead_box(
+        workspace, tmp_path, ["record_competitor", "appeal_report"],
+        specialties=["デザイン性", "自然素材"],
+    )
+    box.run("record_competitor", {
+        "name": "A工務店", "area": "愛知県一宮市",
+        "sources": ["https://example.com/a"], "appeal_axes": ["デザイン性"],
+    })
+    report = json.loads(box.run("appeal_report", {})[0])
+    assert report["differentiators"] == ["自然素材"]
+    assert report["contested_axes"] == [["デザイン性", 1]]
+    assert "市場全体ではない" in report["caveat"]
+
+
+def test_投稿の型に必要な素材が含まれる(workspace, tmp_path):
+    box = _lead_box(workspace, tmp_path, ["post_formats"])
+    result = json.loads(box.run("post_formats", {})[0])
+    works = next(f for f in result["formats"] if f["key"] == "works")
+    assert works["assets"]
+    assert result["themes"]
+
+
+def test_投稿デザインを保存し画像化の手順を返す(workspace, tmp_path):
+    box = _lead_box(workspace, tmp_path, ["build_post_design"])
+    result = json.loads(box.run("build_post_design", {
+        "path": "instagram/works.html",
+        "slides": [
+            {"kind": "cover", "title": "北向きの敷地に、光が回る家"},
+            {"kind": "cta", "title": "ご相談ください"},
+        ],
+        "theme": "wood",
+    })[0])
+
+    assert result["slides"] == 2
+    saved = workspace.read_file("instagram/works.html")
+    assert "1080px" in saved
+    # 事務所名が既定で入る
+    assert "アペックス設計事務所" in saved
+    # 画像は作れないことを社員に伝える
+    assert "画像そのものはこのツールでは生成できない" in result["how_to_export"]
+
+
+def test_見出しのないスライドはエラー結果になる(workspace, tmp_path):
+    box = _lead_box(workspace, tmp_path, ["build_post_design"])
+    output, is_error = box.run(
+        "build_post_design", {"path": "a.html", "slides": [{"kind": "cover"}]}
+    )
+    assert is_error
+    assert "title が必要" in output
+
+
+def test_保存先はワークスペース外に出られない(workspace, tmp_path):
+    box = _lead_box(workspace, tmp_path, ["build_post_design"])
+    output, is_error = box.run("build_post_design", {
+        "path": "../../escape.html", "slides": [{"kind": "cover", "title": "x"}],
+    })
+    assert is_error
+    assert "ワークスペース外" in output

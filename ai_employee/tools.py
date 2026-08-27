@@ -23,7 +23,15 @@ from .company import (
     OfficeProfile,
     ProjectLedger,
 )
+from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, CompetitorLedger
 from .copycheck import review_copy as _review_copy
+from .instagram import (
+    POST_FORMATS,
+    THEMES,
+    InstagramError,
+    build_design,
+    post_format as _post_format,
+)
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions
 from .workspace import Workspace, WorkspaceError, now
 
@@ -70,6 +78,7 @@ def build_tools(
     """ワークスペースと案件台帳に紐づいた全ツールを構築する。"""
     ledger = ledger or ProjectLedger(workspace.root.parent)
     office = OfficeProfile.load(workspace.root.parent)
+    competitors = CompetitorLedger(workspace.root.parent)
     me = workspace.employee_id
 
     def current_datetime() -> dict[str, Any]:
@@ -237,6 +246,65 @@ def build_tools(
 
     def review_copy(text: str) -> dict:
         return _review_copy(text)
+
+    def record_competitor(
+        name: str,
+        area: str,
+        sources: list[str],
+        company_type: str = "その他",
+        appeal_axes: list[str] | None = None,
+        price_range: str = "",
+        instagram: str = "",
+        followers: int | None = None,
+        post_frequency: str = "",
+        strengths: str = "",
+        note: str = "",
+    ) -> dict:
+        return competitors.record(
+            name=name, area=area, sources=sources, company_type=company_type,
+            appeal_axes=appeal_axes, price_range=price_range, instagram=instagram,
+            followers=followers, post_frequency=post_frequency,
+            strengths=strengths, note=note, by=me,
+        )
+
+    def list_competitors(area: str | None = None, company_type: str | None = None) -> dict:
+        hits = competitors.list(area=area, company_type=company_type)
+        return {"count": len(hits), "competitors": hits}
+
+    def appeal_report(area: str | None = None) -> dict:
+        # 自社の訴求軸は事務所プロフィールの得意分野から拾う。
+        own = [a for a in office.specialties if a in APPEAL_AXES]
+        return competitors.appeal_report(area=area, own_axes=own)
+
+    def post_formats() -> dict:
+        return {
+            "formats": [
+                {"key": key, **value} for key, value in POST_FORMATS.items()
+            ],
+            "themes": [{"key": key, "label": v["label"]} for key, v in THEMES.items()],
+        }
+
+    def build_post_design(
+        path: str,
+        slides: list[dict],
+        theme: str = "wood",
+        brand: str | None = None,
+    ) -> dict:
+        html = build_design(
+            slides,
+            theme=theme,
+            brand=brand if brand is not None else office.name,
+        )
+        saved = workspace.write_file(path, html)
+        return {
+            "path": path,
+            "saved_to": str(saved),
+            "slides": len(slides),
+            "theme": theme,
+            "how_to_export": "ブラウザでこの HTML を開き、各スライドを "
+            "1080×1080 でスクリーンショットするか、印刷ダイアログから PDF に出す。"
+            "画像そのものはこのツールでは生成できない。",
+        }
 
     def record_land(
         project_id: str,
@@ -643,6 +711,123 @@ def build_tools(
             review_copy,
         ),
         Tool(
+            "record_competitor",
+            "周辺の住宅会社・工務店・設計事務所を競合台帳に登録する。"
+            "**出典 URL が必須。** 記憶や推測で他社の情報を書いてはいけない。"
+            "web_search / web_fetch で公開情報を確認し、その URL を sources に渡すこと。"
+            "確認できなかった項目は空のままにする。",
+            _obj(
+                {
+                    "name": {"type": "string", "description": "会社名"},
+                    "area": {"type": "string", "description": "商圏 (例 愛知県一宮市)"},
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "情報源の URL(必須。1 件以上)",
+                    },
+                    "company_type": {
+                        "type": "string",
+                        "enum": list(COMPETITOR_TYPES),
+                        "description": "業態",
+                    },
+                    "appeal_axes": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(APPEAL_AXES)},
+                        "description": "その会社が前面に出している訴求軸",
+                    },
+                    "price_range": {
+                        "type": "string",
+                        "description": "公開されている価格帯のみ。書かれていなければ空にする。",
+                    },
+                    "instagram": {"type": "string", "description": "Instagram アカウント"},
+                    "followers": {"type": "integer", "description": "フォロワー数(確認できた時点の値)"},
+                    "post_frequency": {"type": "string", "description": "投稿頻度 (例 週3回)"},
+                    "strengths": {"type": "string", "description": "打ち出している強み"},
+                    "note": {"type": "string", "description": "補足"},
+                },
+                ["name", "area", "sources"],
+            ),
+            record_competitor,
+        ),
+        Tool(
+            "list_competitors",
+            "調査済みの競合を新しい順に返す。競合の話をする前に必ずこれで"
+            "「実際に調べた範囲」を確認すること。台帳にない会社を語らない。",
+            _obj(
+                {
+                    "area": {"type": "string", "description": "商圏の部分一致 (例 愛知)"},
+                    "company_type": {
+                        "type": "string",
+                        "enum": list(COMPETITOR_TYPES),
+                        "description": "業態で絞る",
+                    },
+                },
+                [],
+            ),
+            list_competitors,
+        ),
+        Tool(
+            "appeal_report",
+            "競合の訴求軸を集計し、混んでいる軸と空いている軸を出す。"
+            "自社の得意分野(事務所プロフィール)と突き合わせ、差別化できる軸を示す。"
+            "空いている軸は需要がない可能性もあるので、断定せず判断材料として扱うこと。",
+            _obj({"area": {"type": "string", "description": "商圏で絞る (例 愛知)"}}, []),
+            appeal_report,
+        ),
+        Tool(
+            "post_formats",
+            "Instagram 投稿の型(施工事例・ビフォーアフター・豆知識・お客様の声・"
+            "イベント告知・スタッフ)と、各型の 1 枚目のフック・構成・必要な素材を返す。"
+            "投稿を企画する前にこれを見て型を選ぶこと。素材が揃わない型は選ばない。",
+            _obj({}, []),
+            post_formats,
+        ),
+        Tool(
+            "build_post_design",
+            "Instagram 投稿のデザインを 1080×1080 の HTML として保存する。"
+            "**画像そのものは作れない。** 保存した HTML をブラウザで開いて"
+            "スクリーンショットするか PDF 出力して画像化する、と必ず報告に書くこと。"
+            "写真は入らないので、写真を入れる位置は原稿側で指示する。",
+            _obj(
+                {
+                    "path": {
+                        "type": "string",
+                        "description": "保存先 (例 instagram/2026-09-works.html)",
+                    },
+                    "slides": {
+                        "type": "array",
+                        "description": "スライドの配列。最初は kind=cover、最後は kind=cta にする。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["cover", "body", "cta"],
+                                    "description": "表紙 / 本文 / 締め",
+                                },
+                                "label": {"type": "string", "description": "小見出し (例 課題)"},
+                                "title": {"type": "string", "description": "見出し(必須)"},
+                                "body": {"type": "string", "description": "本文"},
+                            },
+                            "required": ["title"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "theme": {
+                        "type": "string",
+                        "enum": list(THEMES),
+                        "description": "配色",
+                    },
+                    "brand": {
+                        "type": "string",
+                        "description": "各スライド下部に入れる事務所名。省略時は事務所プロフィールの名称。",
+                    },
+                },
+                ["path", "slides"],
+            ),
+            build_post_design,
+        ),
+        Tool(
             "record_land",
             "調べた敷地条件を案件に記録する。"
             "用途地域・建蔽率・容積率は、都市計画情報や役所で確認した値だけを入れること。"
@@ -850,7 +1035,7 @@ class ToolBox:
             return f"ツール '{name}' は利用権限がありません。", True
         try:
             result = tool.handler(**arguments)
-        except (WorkspaceError, CompanyError) as exc:
+        except (WorkspaceError, CompanyError, CompetitorError, InstagramError) as exc:
             return f"エラー: {exc}", True
         except TypeError as exc:
             return f"エラー: 引数が不正です ({exc})", True

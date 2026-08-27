@@ -28,7 +28,9 @@ from .company import (
     ProjectLedger,
 )
 from .billing import BILLING_STATUSES, EXAMPLE_SCHEDULE
+from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, CompetitorLedger
 from .copycheck import review_copy
+from .instagram import POST_FORMATS, THEMES, InstagramError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
@@ -538,6 +540,86 @@ def _print_diagnosis(result: dict[str, Any]) -> None:
     print(RED(f"\n※ {result['disclaimer']}"))
 
 
+def cmd_competitors(args: argparse.Namespace) -> int:
+    """調査済みの競合と、訴求軸の集計を表示する。"""
+    ledger = CompetitorLedger(args.office)
+
+    if args.axes:
+        office = OfficeProfile.load(args.office)
+        own = [a for a in office.specialties if a in APPEAL_AXES]
+        report = ledger.appeal_report(area=args.area, own_axes=own)
+        scope = f"({args.area})" if args.area else "(全エリア)"
+        print(BOLD(f"訴求軸の集計 {scope}") + DIM(f"  調査済み {report['competitor_count']} 社"))
+        if not report["competitor_count"]:
+            print(DIM("  競合が 1 社も登録されていません。まず調査して登録してください。"))
+            return 0
+        print(BOLD("\n  何社が言っているか"))
+        for axis, count in report["crowded_axes"]:
+            print(f"    {_pad(axis, 24)}{'■' * count} {count} 社")
+        if report["empty_axes"]:
+            print(BOLD("\n  誰も言っていない軸"))
+            print(DIM("    " + "、".join(report["empty_axes"])))
+        if own:
+            print(BOLD("\n  自社の得意分野との突き合わせ"))
+            for axis in report["differentiators"]:
+                print(f"    {_pad(axis, 24)}" + BOLD("競合なし — 差別化の候補"))
+            for axis, count in report["contested_axes"]:
+                print(f"    {_pad(axis, 24)}" + DIM(f"競合 {count} 社と重なる"))
+        else:
+            print(DIM("\n  事務所プロフィールの得意分野が未設定のため、"
+                      "自社との突き合わせはできません(office --specialties)。"))
+        print(DIM(f"\n  ※ {report['caveat']}"))
+        return 0
+
+    records = ledger.list(area=args.area, company_type=args.type)
+    if not records:
+        print("該当する競合は登録されていません。")
+        return 0
+    print(BOLD(f"調査済みの競合 {len(records)} 社") + DIM("(新しく調べた順)"))
+    for record in records:
+        followers = f"  {record['followers']:,}フォロワー" if record["followers"] else ""
+        print(BOLD(f"  [{record['id']}] {record['name']}")
+              + f"  {record['type']}  {record['area']}")
+        if record["appeal_axes"]:
+            print(f"      訴求: {'、'.join(record['appeal_axes'])}")
+        if record["instagram"] or followers:
+            print(DIM(f"      {record['instagram']}{followers}"
+                      f"  {record['post_frequency']}"))
+        if record["price_range"]:
+            print(DIM(f"      価格帯: {record['price_range']}"))
+        print(DIM(f"      調査 {record['researched_at'][:10]} / 出典 "
+                  + "、".join(record["sources"])))
+    return 0
+
+
+def cmd_post(args: argparse.Namespace) -> int:
+    """Instagram 投稿の型を一覧する。"""
+    if args.format:
+        data = POST_FORMATS[args.format]
+        print(BOLD(f"{data['label']} ({args.format})"))
+        print(f"  ねらい: {data['purpose']}")
+        print(BOLD("\n  1枚目のフック"))
+        print(f"    {data['hook']}")
+        print(BOLD("\n  構成"))
+        for index, slide in enumerate(data["slides"], 1):
+            print(f"    {index}. {slide}")
+        print(BOLD("\n  必要な素材") + DIM("(揃わないなら別の型を選ぶ)"))
+        for asset in data["assets"]:
+            print(f"    ・{asset}")
+        return 0
+
+    print(BOLD("Instagram 投稿の型"))
+    for key, data in POST_FORMATS.items():
+        print(f"  {_pad(key, 14)}{_pad(data['label'], 24)}{DIM(data['purpose'])}")
+    print(BOLD("\n配色"))
+    for key, data in THEMES.items():
+        print(f"  {_pad(key, 14)}{data['label']}")
+    print(DIM("\n型の詳細: python -m ai_employee post --format works"))
+    print(DIM("デザインの生成は社員に依頼する: "
+              'ask --id shukyaku "施工事例の投稿を作って"'))
+    return 0
+
+
 def cmd_land(args: argparse.Namespace) -> int:
     """土地診断。案件に記録された条件、または直接指定した条件で診断する。"""
     office = OfficeProfile.load(args.office)
@@ -979,6 +1061,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_office.set_defaults(func=cmd_office)
 
+    p_competitors = sub.add_parser("competitors", help="調査済みの競合と訴求軸の集計")
+    p_competitors.add_argument("--area", help="商圏の部分一致 (例 愛知)")
+    p_competitors.add_argument("--type", choices=list(COMPETITOR_TYPES), help="業態で絞る")
+    p_competitors.add_argument(
+        "--axes", action="store_true", help="訴求軸の集計と差別化候補を表示する"
+    )
+    p_competitors.set_defaults(func=cmd_competitors)
+
+    p_post = sub.add_parser("post", help="Instagram 投稿の型を一覧する")
+    p_post.add_argument("--format", choices=list(POST_FORMATS), help="型の詳細を表示する")
+    p_post.set_defaults(func=cmd_post)
+
     p_land = sub.add_parser(
         "land", help="土地診断(建てられるボリュームの目安と、確認すべき論点)"
     )
@@ -1125,7 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (WorkspaceError, CompanyError, LandError) as exc:
+    except (WorkspaceError, CompanyError, LandError, CompetitorError, InstagramError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:
