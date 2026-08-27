@@ -189,6 +189,47 @@ class Canvas:
             x_px + width_px * 0.55, y_px, x_px + width_px * 0.55, y_px + height, THIN, GRAY
         )
 
+    # ---- 合成 ----
+    def embed(self, other: "Canvas", x_px: float, y_px: float,
+              scale: Optional[float] = None, box: Optional[Tuple[float, float]] = None,
+              center: bool = True) -> float:
+        """別のキャンバスを、このキャンバスの指定位置に取り込む。
+
+        `box` を渡すとその枠（幅, 高さ）に収まるよう縮尺を決め、既定では枠内に
+        中央寄せする。販売図面のように複数の図を 1 枚に組むために使う。
+        戻り値は適用した縮尺。
+        """
+        offset_x = offset_y = 0.0
+        if scale is None:
+            if box is None:
+                scale = 1.0
+            else:
+                scale = min(box[0] / other.width_px, box[1] / other.height_px)
+        if box and center:
+            offset_x = max(0.0, (box[0] - other.width_px * scale) / 2)
+            offset_y = max(0.0, (box[1] - other.height_px * scale) / 2)
+
+        def move(point: Point) -> Point:
+            return (x_px + offset_x + point[0] * scale, y_px + offset_y + point[1] * scale)
+
+        for item in other.items:
+            if isinstance(item, Line):
+                self.items.append(
+                    Line(move(item.a), move(item.b), max(0.2, item.width * scale),
+                         item.color, _scale_dash(item.dash, scale), item.title)
+                )
+            elif isinstance(item, Polygon):
+                self.items.append(
+                    Polygon([move(p) for p in item.points], item.fill, item.stroke,
+                            max(0.2, item.width * scale), _scale_dash(item.dash, scale), item.close)
+                )
+            else:
+                self.items.append(
+                    Text(move(item.point), item.content, max(4.0, item.size * scale),
+                         item.anchor, item.color, item.weight, item.rotate, item.title)
+                )
+        return scale
+
     # ---- 出力 ----
     def render(self) -> str:
         """SVG 文字列。"""
@@ -249,6 +290,12 @@ class Canvas:
                               item.size * scale, rgb(item.color), align)
         if self.subtitle:
             page.text(origin_x, origin_y - 10 * scale, self.subtitle, 8 * scale, rgb(GRAY))
+
+
+def _scale_dash(dash: str, scale: float) -> str:
+    if not dash:
+        return ""
+    return " ".join(f"{float(value) * scale:.2f}" for value in dash.split())
 
 
 def _dash(dash: str, scale: float) -> Optional[List[float]]:

@@ -239,6 +239,17 @@ function collectPayload() {
       target_floor_area_m2: numberOrNull(form.target_floor_area_m2.value),
       market_unit_price_per_tsubo: numberOrNull(form.market_unit_price_per_tsubo.value),
     },
+    listing: {
+      property_name: form.property_name.value || "売地",
+      access: form.access.value,
+      transaction_type: form.transaction_type.value || "媒介",
+      building_condition: form.building_condition.value || "無",
+      current_state: form.current_state.value || "更地",
+      delivery: form.delivery.value || "相談",
+      utilities: form.utilities.value,
+      company: form.company.value,
+      license: form.license.value,
+    },
     application: {
       owner: {
         name: form.owner_name.value,
@@ -614,6 +625,7 @@ function renderDrawings(data) {
     return;
   }
   const tabs = [
+    ...(d.listing ? [{ id: "listing", label: "販売図面", svg: d.listing }] : []),
     { id: "site", label: "配置図", svg: d.site_plan },
     ...(d.plans || []).map((p) => ({ id: `plan${p.storey}`, label: `${p.storey}階 平面図`, svg: p.svg })),
     ...(d.elevations || []).map((e) => ({ id: `elev${e.facade}`, label: `${e.facade}立面図`, svg: e.svg })),
@@ -749,6 +761,8 @@ function renderExports(data) {
   const buttons = [
     { fmt: "package", label: "★ 申請パッケージ一式 (.zip)", needsBuilding: true, primary: true },
     { fmt: "pdf", label: "★ 申請図書 (.pdf)", needsBuilding: true, primary: true },
+    { fmt: "listing-pdf", label: "販売図面 (.pdf)", needsBuilding: false },
+    { fmt: "listing-svg", label: "販売図面 (.svg)", needsBuilding: false },
     { fmt: "application-html", label: "確認申請 記載事項＋図面 (.html)", needsBuilding: true },
     { fmt: "ifc", label: "BIM モデル (.ifc)", needsBuilding: true },
     { fmt: "compliance-md", label: "法適合チェック (.md)", needsBuilding: true },

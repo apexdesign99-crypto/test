@@ -15,6 +15,7 @@
 | 確認申請 記載事項 | 第一面〜第五面のデータシート（印刷用 HTML / Markdown） |
 | 事業性レポート | 診断スコア・建築費・総事業費 |
 | **PDF** | 上記を 1 冊にまとめた申請図書（表紙・申請書・チェック・壁量計算・図面全ページ） |
+| **販売図面** | 不動産の販売図面（マイソク）1 枚。物件概要・区画図・参考プラン・外観・事業費（SVG / PDF） |
 
 ```
                   AI LAND DESIGN
@@ -120,7 +121,7 @@ API ドキュメント（OpenAPI）は `/docs` で確認できる。
 | `POST /api/analyze` | 全工程を実行し、レポート・図面 SVG を含む結果を返す |
 | `POST /api/analyze` の応答 | 図面 SVG（配置図・平面図・立面図4面・断面図・求積図）と法適合チェックを含む |
 | `POST /api/package` | **申請パッケージ一式を ZIP で取得** |
-| `POST /api/export/{fmt}` | 個別ダウンロード（`ifc` / `site-plan-svg` / `plan-svg` / `elevation-svg?facade=南` / `section-svg` / `area-svg` / `application-html` / `application-md` / `compliance-md` / `compliance-json` / `structure-md` / **`pdf`** / `obj` / `report-md` / `report-json` / `permit-md`） |
+| `POST /api/export/{fmt}` | 個別ダウンロード（`ifc` / `site-plan-svg` / `plan-svg` / `elevation-svg?facade=南` / `section-svg` / `area-svg` / `application-html` / `application-md` / `compliance-md` / `compliance-json` / `structure-md` / **`pdf`** / **`listing-svg`** / **`listing-pdf`** / `obj` / `report-md` / `report-json` / `permit-md`） |
 
 `POST /api/analyze` のリクエスト例:
 
@@ -180,6 +181,31 @@ result = run(site, Options(household_size=4, structure=Structure.WOOD, grade="�
 print(result.diagnosis.rank, result.cost.project_total_jpy)
 write_outputs(result, "out/")
 ```
+
+## 販売図面（マイソク）
+
+売地の販売図面を 1 枚（A4 縦）で出力する。不動産の実務で使われる構成に合わせている。
+
+```
+┌──────────────────────────────────────────┐
+│ 物件名                            価格     │
+├──────────────────┬───────────────────────┤
+│ 区画図（敷地・道路・寸法） │ 物件概要（17項目の表）  │
+├──────────────────┴───────────────────────┤
+│ 参考プラン（各階平面図）      │ 外観イメージ       │
+├──────────────────────────────────────────┤
+│ 建築プランの目安（延床・間取り・建築費・総事業費）   │
+├──────────────────────────────────────────┤
+│ 取引態様・注記・会社情報                       │
+└──────────────────────────────────────────┘
+```
+
+物件概要は所在地・交通・価格・坪単価・土地面積・私道負担・用途地域・建蔽率／容積率・
+接道状況・地目・都市計画・防火指定・地勢・設備・現況／引渡・建築条件・取引態様。
+ハザード（浸水想定・土砂災害警戒区域）が該当する場合は行が追加される。
+
+参考プランは自動生成であることと、区画図が確定測量に基づかないことを図面上に明記する
+（画面の「販売図面」タブ、`POST /api/export/listing-svg` / `listing-pdf`）。
 
 ## PDF 出力
 
@@ -264,6 +290,7 @@ API は `POST /api/export/pdf`、ZIP パッケージにも同梱）。
 | 法適合チェック | `compliance.py` | 集団規定・単体規定の自動判定（条文・要求値・実績値） |
 | 申請図面 | `drawings.py`, `svgkit.py` | 配置図・立面図4面・断面図・求積図（SVG / PDF 共通の Canvas） |
 | PDF 出力 | `pdfkit.py`, `pdf_report.py` | フォント埋め込み・図面のベクタ描画・申請図書の組版 |
+| 販売図面 | `listing.py` | 物件概要・区画図・参考プランを 1 枚に組んだマイソク |
 | 確認申請書 | `application.py` | 第一面〜第五面の記載事項、印刷用 HTML |
 | 実施設計・確認申請 | `documents.py` | 申請概要、必要手続きの判定、設計図書チェックリスト |
 | パイプライン | `pipeline.py` | 上記の受け渡しとレポート生成 |

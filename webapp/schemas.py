@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ai_land_design.application import ApplicationInfo, Party
+from ai_land_design.listing import ListingInfo
 from ai_land_design.models import Direction, FireZone, Structure, UseDistrict
 from ai_land_design.pipeline import Options
 from ai_land_design.sources.gis import site_from_dict
@@ -107,6 +108,29 @@ class ApplicationIn(BaseModel):
         )
 
 
+class ListingIn(BaseModel):
+    """販売図面（マイソク）に載せる情報。"""
+
+    property_name: str = Field(default="売地", max_length=80)
+    price_jpy: Optional[int] = Field(default=None, ge=0)
+    access: str = Field(default="", max_length=120)
+    land_category: str = Field(default="宅地", max_length=40)
+    city_planning: str = Field(default="市街化区域", max_length=40)
+    current_state: str = Field(default="更地", max_length=40)
+    delivery: str = Field(default="相談", max_length=40)
+    transaction_type: str = Field(default="媒介", max_length=40)
+    building_condition: str = Field(default="無", max_length=40)
+    utilities: str = Field(default="公営水道・本下水・都市ガス", max_length=80)
+    private_road_burden: str = Field(default="無", max_length=40)
+    terrain: str = Field(default="平坦", max_length=40)
+    note: str = Field(default="", max_length=200)
+    company: str = Field(default="", max_length=80)
+    license: str = Field(default="", max_length=80)
+
+    def to_info(self) -> ListingInfo:
+        return ListingInfo(**self.model_dump())
+
+
 class OptionsIn(BaseModel):
     household_size: int = Field(default=4, ge=1, le=10)
     structure: str = Field(default=Structure.WOOD.value)
@@ -144,7 +168,10 @@ class OptionsIn(BaseModel):
         return value
 
     def to_options(
-        self, land_price_jpy: Optional[int], application: Optional[ApplicationInfo] = None
+        self,
+        land_price_jpy: Optional[int],
+        application: Optional[ApplicationInfo] = None,
+        listing: Optional[ListingInfo] = None,
     ) -> Options:
         return Options(
             household_size=self.household_size,
@@ -158,6 +185,7 @@ class OptionsIn(BaseModel):
             market_unit_price_per_tsubo=self.market_unit_price_per_tsubo,
             land_price_jpy=land_price_jpy,
             application=application or ApplicationInfo(),
+            listing=listing or ListingInfo(),
         )
 
 
@@ -209,6 +237,7 @@ class AnalyzeRequest(BaseModel):
     provenance: List[Dict[str, str]] = Field(default_factory=list)
     options: OptionsIn = Field(default_factory=OptionsIn)
     application: ApplicationIn = Field(default_factory=ApplicationIn)
+    listing: ListingIn = Field(default_factory=ListingIn)
 
     @field_validator("polygon")
     @classmethod
@@ -247,4 +276,6 @@ class AnalyzeRequest(BaseModel):
         return site_from_dict(self.to_site_dict())
 
     def to_options(self) -> Options:
-        return self.options.to_options(self.land_price_jpy, self.application.to_info())
+        return self.options.to_options(
+            self.land_price_jpy, self.application.to_info(), self.listing.to_info()
+        )

@@ -33,9 +33,11 @@ from . import drawings as drawings_module
 from . import exterior as exterior_module
 from . import feasibility as feasibility_module
 from . import layout as layout_module
+from . import listing as listing_module
 from . import pdf_report as pdf_module
 from . import structure as structure_module
 from .application import ApplicationInfo
+from .listing import ListingInfo
 from .bim import to_ifc
 from .compliance import ComplianceReport
 from .pdfkit import FontError
@@ -68,6 +70,7 @@ class Options:
     roof_weight: str = "軽い"  # 壁量計算に使う屋根の重さ（軽い / 重い）
     seismic_table_verified: bool = False  # 係数表が現行の告示値だと確認済みか
     application: ApplicationInfo = field(default_factory=ApplicationInfo)
+    listing: ListingInfo = field(default_factory=ListingInfo)  # 販売図面の記載事項
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -83,6 +86,7 @@ class Options:
             "roof_weight": self.roof_weight,
             "seismic_table_verified": self.seismic_table_verified,
             "application": self.application.to_dict(),
+            "listing": self.listing.to_dict(),
         }
 
 
@@ -394,8 +398,11 @@ def application_package(result: ProjectResult, include_pdf: bool = True) -> Dict
         )
     files["確認申請_図書チェックリスト.md"] = documents_module.to_markdown(site, envelope, building)
 
+    files["販売図面.svg"] = listing_module.to_svg(site, result, result.options.listing)
+
     if include_pdf:
         try:
+            files["販売図面.pdf"] = listing_module.to_pdf(site, result, result.options.listing)
             files["申請図書.pdf"] = pdf_module.build(result)
         except FontError as error:
             # 日本語フォントが無い環境では PDF を諦め、理由を残す

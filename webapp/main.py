@@ -24,6 +24,7 @@ from ai_land_design import (
     compliance as compliance_module,
     drawings as drawings_module,
     exterior,
+    listing as listing_module,
     pdf_report as pdf_module,
     structure as structure_module,
     layout,
@@ -381,6 +382,9 @@ def analyze(request: AnalyzeRequest) -> JSONResponse:
             for facade, svg in drawings_module.all_elevations_svg(site, building).items()
         ]
         payload["drawings"]["section"] = drawings_module.section_svg(site, building)
+        payload["drawings"]["listing"] = listing_module.to_svg(
+            site, result, result.options.listing
+        )
         payload["drawings"]["area_calculation"] = drawings_module.area_calculation_svg(
             site, building
         )
@@ -435,6 +439,8 @@ EXPORT_FORMATS = {
     "compliance-md": ("compliance.md", MARKDOWN),
     "structure-md": ("wall_quantity.md", MARKDOWN),
     "pdf": ("申請図書.pdf", "application/pdf"),
+    "listing-svg": ("販売図面.svg", SVG),
+    "listing-pdf": ("販売図面.pdf", "application/pdf"),
     "compliance-json": ("compliance.json", "application/json"),
 }
 
@@ -453,6 +459,18 @@ def export(
         )
     result = _run(request)
     filename, media_type = EXPORT_FORMATS[fmt]
+
+    if fmt == "listing-pdf":
+        try:
+            body = listing_module.to_pdf(result.site, result, result.options.listing)
+        except FontError as error:
+            raise HTTPException(status_code=503, detail=f"PDF を生成できません: {error}") from error
+        prefix = result.site.site_id or "site"
+        return Response(
+            content=body,
+            media_type="application/pdf",
+            headers={"Content-Disposition": content_disposition(f"{prefix}_販売図面.pdf")},
+        )
 
     if fmt == "pdf":
         try:
@@ -489,6 +507,8 @@ def export(
             body = permit_markdown(site, envelope, building)
         elif fmt == "exterior-svg":
             body = exterior.to_svg(building)
+        elif fmt == "listing-svg":
+            body = listing_module.to_svg(site, result, result.options.listing)
         elif fmt == "site-plan-svg":
             body = drawings_module.site_plan_svg(site, building, envelope)
         elif fmt == "section-svg":
