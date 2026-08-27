@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from ai_employee.cli import main
 
 
@@ -67,8 +69,6 @@ def test_職種テンプレートを一覧できる(tmp_path, capsys):
 
 
 def test_不正な職種は引数解析で弾かれる(tmp_path):
-    import pytest
-
     with pytest.raises(SystemExit):
         run(["hire", "--name", "X", "--template", "ninja"], tmp_path)
 
@@ -223,3 +223,79 @@ def test_流入経路別に集計できる(tmp_path, capsys):
 def test_案件がなければ集計できないと伝える(tmp_path, capsys):
     assert run(["sources"], tmp_path) == 0
     assert "集計できる案件がありません" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------- 営業
+
+
+def setup_sales(tmp_path):
+    from ai_employee.company import ProjectLedger
+
+    run(
+        [
+            "office", "--name", "A設計",
+            "--unit-prices", "戸建住宅:80-100",
+            "--design-fee-rate", "10",
+            "--design-fee-minimum", "300",
+        ],
+        tmp_path,
+    )
+    return ProjectLedger(tmp_path).add("佐々木様 新築", "佐々木様", "戸建住宅", owner="eigyo")
+
+
+def test_坪単価と料率を設定できる(tmp_path):
+    setup_sales(tmp_path)
+    saved = json.loads((tmp_path / "_company" / "office.json").read_text(encoding="utf-8"))
+    assert saved["unit_prices"] == {"戸建住宅": [80, 100]}
+    assert saved["design_fee_rate"] == 10
+    assert saved["design_fee_minimum"] == 300
+
+
+@pytest.mark.parametrize(
+    "raw", ["戸建住宅", "戸建住宅:80", "戸建住宅:100-80", "宇宙船:80-100", "戸建住宅:安-高"]
+)
+def test_坪単価の書式不正は弾かれる(tmp_path, raw):
+    assert run(["office", "--unit-prices", raw], tmp_path) == 1
+
+
+def test_概算を算定できる(tmp_path, capsys):
+    setup_sales(tmp_path)
+    capsys.readouterr()
+    assert run(["estimate", "--kind", "戸建住宅", "--tsubo", "35"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "2,800〜3,500 万円" in out
+    assert "確定金額ではない" in out
+
+
+def test_単価未設定の用途は概算を出さずエラー終了(tmp_path, capsys):
+    setup_sales(tmp_path)
+    capsys.readouterr()
+    assert run(["estimate", "--kind", "共同住宅", "--tsubo", "100"], tmp_path) == 1
+    assert "未設定" in capsys.readouterr().err
+
+
+def test_ヒアリング状況を確認できる(tmp_path, capsys):
+    from ai_employee.company import ProjectLedger
+
+    project = setup_sales(tmp_path)
+    ProjectLedger(tmp_path).record_hearing(
+        project["id"], {"budget": "総額4500万円"}, by="eigyo"
+    )
+    capsys.readouterr()
+    assert run(["hearing", project["id"]], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "総額4500万円" in out
+    assert "決裁者" in out
+    assert "提案より先に確認してください" in out
+
+
+def test_必須が揃えば提案可と表示される(tmp_path, capsys):
+    from ai_employee.company import HEARING_REQUIRED, ProjectLedger
+
+    project = setup_sales(tmp_path)
+    ProjectLedger(tmp_path).record_hearing(
+        project["id"], {k: "確認済み" for k in HEARING_REQUIRED}, by="eigyo"
+    )
+    capsys.readouterr()
+    assert run(["hearing", project["id"]], tmp_path) == 0
+    assert "提案に進めます" in capsys.readouterr().out

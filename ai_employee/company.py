@@ -44,6 +44,29 @@ STATUSES = ("active", "won", "lost", "onhold", "done")
 # 用途種別。
 KINDS = ("戸建住宅", "共同住宅", "店舗", "オフィス", "医療福祉", "公共", "改修", "その他")
 
+# 1 坪 = 400/121 ㎡。
+TSUBO_SQM = 400 / 121
+
+
+# 初回相談で必ず押さえる項目。ここが埋まらないまま提案に進むと必ず手戻りする。
+# (key, 表示名, 提案前に必須か)
+HEARING_ITEMS: tuple[tuple[str, str, bool], ...] = (
+    ("budget", "予算(総額)", True),
+    ("funding", "資金計画(自己資金・借入)", True),
+    ("land", "土地の状況(所有/取得済/検討中/未定)", True),
+    ("move_in", "入居・開業の希望時期", True),
+    ("floor_area", "希望延床面積", True),
+    ("family", "家族構成・利用人数", False),
+    ("parking", "駐車台数", False),
+    ("priorities", "要望の優先順位", True),
+    ("decision_maker", "決裁者", True),
+    ("competitors", "他社の検討状況", False),
+)
+
+HEARING_KEYS = tuple(key for key, _, _ in HEARING_ITEMS)
+HEARING_LABELS = {key: label for key, label, _ in HEARING_ITEMS}
+HEARING_REQUIRED = tuple(key for key, _, required in HEARING_ITEMS if required)
+
 
 class CompanyError(RuntimeError):
     """案件台帳の操作に失敗した。"""
@@ -67,6 +90,12 @@ class OfficeProfile:
     business_hours: str = ""
     contact: str = ""
     notes: str = ""
+
+    # 概算算定用。AI に坪単価や料率を推測させないため、事務所が明示的に設定する。
+    # unit_prices: 用途種別 -> [下限, 上限] 万円/坪
+    unit_prices: dict[str, list[int]] = field(default_factory=dict)
+    design_fee_rate: float | None = None      # 設計監理料率 (%)
+    design_fee_minimum: int | None = None     # 設計監理料の最低額 (万円)
 
     def is_configured(self) -> bool:
         """施主向けの文面を書くのに足る情報があるか。"""
@@ -97,6 +126,92 @@ class OfficeProfile:
             encoding="utf-8",
         )
         return path
+
+    def can_estimate(self, kind: str) -> bool:
+        return bool(self.unit_prices.get(kind)) and self.design_fee_rate is not None
+
+    def estimate(
+        self,
+        kind: str,
+        floor_area_tsubo: float | None = None,
+        floor_area_sqm: float | None = None,
+    ) -> dict[str, Any]:
+        """延床面積から工事費と設計監理料の概算レンジを出す。
+
+        計算はここで行い、社員には結果と根拠だけを渡す。暗算をさせない。
+        単価や料率が未設定なら概算を出さずに失敗させる——推測させないため。
+        """
+        if kind not in KINDS:
+            raise CompanyError(f"不正な用途種別です: {kind} (選択肢: {'/'.join(KINDS)})")
+        if (floor_area_tsubo is None) == (floor_area_sqm is None):
+            raise CompanyError("延床面積は 坪 か ㎡ のどちらか一方を指定してください")
+
+        tsubo = floor_area_tsubo if floor_area_tsubo is not None else floor_area_sqm / TSUBO_SQM
+        if tsubo <= 0:
+            raise CompanyError("延床面積は 0 より大きい値で指定してください")
+
+        prices = self.unit_prices.get(kind)
+        if not prices:
+            raise CompanyError(
+                f"「{kind}」の坪単価が事務所プロフィールに未設定のため、概算を出せません。"
+                f"office コマンドの --unit-prices で設定してください。"
+                f"設定されるまで概算金額を書いてはいけません。"
+            )
+        if self.design_fee_rate is None:
+            raise CompanyError(
+                "設計監理料率が事務所プロフィールに未設定のため、設計料を算定できません。"
+                "office コマンドの --design-fee-rate で設定してください。"
+            )
+
+        low_unit, high_unit = prices
+        # int で渡されても "35 坪" / "35.0 坪" と揺れないよう float に揃える。
+        tsubo = round(float(tsubo), 1)
+        construction = {
+            "low": round(low_unit * tsubo),
+            "high": round(high_unit * tsubo),
+        }
+        rate = self.design_fee_rate
+        raw_fee = {
+            "low": round(construction["low"] * rate / 100),
+            "high": round(construction["high"] * rate / 100),
+        }
+        minimum = self.design_fee_minimum
+        fee = dict(raw_fee)
+        applied_minimum = False
+        if minimum is not None:
+            if fee["low"] < minimum:
+                fee["low"] = minimum
+                applied_minimum = True
+            if fee["high"] < minimum:
+                fee["high"] = minimum
+                applied_minimum = True
+
+        basis = (
+            f"延床 {tsubo} 坪 × 坪単価 {low_unit}〜{high_unit} 万円 = "
+            f"工事費 {construction['low']:,}〜{construction['high']:,} 万円。"
+            f"設計監理料は工事費の {rate}% で {raw_fee['low']:,}〜{raw_fee['high']:,} 万円"
+        )
+        if applied_minimum:
+            basis += f"(最低額 {minimum:,} 万円を適用)"
+        basis += "。単位はすべて万円・税別。"
+
+        return {
+            "kind": kind,
+            "floor_area_tsubo": tsubo,
+            "floor_area_sqm": round(tsubo * TSUBO_SQM, 1),
+            "unit_price_range": [low_unit, high_unit],
+            "construction_cost": construction,
+            "design_fee": {
+                **fee,
+                "rate_percent": rate,
+                "minimum": minimum,
+                "applied_minimum": applied_minimum,
+            },
+            "basis": basis,
+            "caveat": "坪単価に基づく概算であり、確定金額ではない。"
+            "地盤・外構・別途工事・設備グレードで変動する。提示時は必ず前提と"
+            "確定でない旨を併記すること。",
+        }
 
     def as_prompt(self) -> str:
         """system プロンプトに差し込む事務所情報。"""
@@ -131,6 +246,24 @@ class OfficeProfile:
             lines.extend(f"  {i}. {step}" for i, step in enumerate(self.consultation_flow, 1))
         if self.notes.strip():
             lines.append(f"- 補足: {self.notes}")
+        if self.unit_prices and self.design_fee_rate is not None:
+            ranges = "、".join(
+                f"{kind} {low}〜{high} 万円/坪" for kind, (low, high) in self.unit_prices.items()
+            )
+            lines.append(f"- 概算の坪単価: {ranges}")
+            lines.append(
+                f"- 設計監理料率: {self.design_fee_rate}%"
+                + (f"(最低 {self.design_fee_minimum:,} 万円)" if self.design_fee_minimum else "")
+            )
+            lines.append(
+                "- 概算金額は estimate_cost ツールで算定する。自分で掛け算をしない。"
+            )
+        else:
+            lines.append(
+                "- 坪単価・設計監理料率が未設定のため、概算金額を出せない。"
+                "金額を求められたら算定できない旨と、必要な設定を報告すること。"
+                "推測した数字を書いてはいけない。"
+            )
         lines.append(
             "- ここに書かれていない事務所固有の情報(料金・日程・実績・エリア)は書かない。"
             "必要なら【要確認】として残すこと。"
@@ -205,6 +338,8 @@ class ProjectLedger:
             "owner": owner.strip(),
             "next_action": "",
             "next_due": None,
+            # ヒアリング結果。未記入の項目は「未確認」であることが機械的に分かる。
+            "requirements": {},
             "created_at": stamp,
             "updated_at": stamp,
             "history": [
@@ -318,6 +453,67 @@ class ProjectLedger:
         return self.update(project_id, note=entry, by=by)
 
     # ------------------------------------------------------------ 集計
+
+    def record_hearing(
+        self, project_id: str, items: dict[str, str], by: str = ""
+    ) -> dict[str, Any]:
+        """ヒアリング結果を案件に記録する(部分更新)。
+
+        聞けた項目だけを渡せばよい。渡さなかった項目は「未確認」のまま残り、
+        hearing_gaps で機械的に拾える。営業の最大の失敗は聞き漏れなので、
+        埋まっているかどうかを社員の自己申告に任せない。
+        """
+        unknown = set(items) - set(HEARING_KEYS)
+        if unknown:
+            raise CompanyError(
+                f"ヒアリング項目として未知です: {sorted(unknown)} "
+                f"(有効な項目: {', '.join(HEARING_KEYS)})"
+            )
+        recorded = {k: str(v).strip() for k, v in items.items() if str(v).strip()}
+        if not recorded:
+            raise CompanyError("記録する内容がありません")
+
+        projects = self._read()
+        for project in projects:
+            if project["id"] != project_id:
+                continue
+            requirements = dict(project.get("requirements") or {})
+            requirements.update(recorded)
+            project["requirements"] = requirements
+            stamp = now().isoformat(timespec="seconds")
+            project["updated_at"] = stamp
+            project["history"].append(
+                {
+                    "at": stamp,
+                    "by": by or "unknown",
+                    "entry": "ヒアリングを記録: "
+                    + "、".join(HEARING_LABELS[k] for k in recorded),
+                }
+            )
+            self._write(projects)
+            return project
+        raise CompanyError(f"案件が見つかりません: {project_id}")
+
+    def hearing_gaps(self, project_id: str) -> dict[str, Any]:
+        """まだ聞けていない項目を返す。提案に進む前の関門。"""
+        project = self.get(project_id)
+        requirements = project.get("requirements") or {}
+
+        def entry(key: str) -> dict[str, str]:
+            return {"key": key, "label": HEARING_LABELS[key]}
+
+        missing = [entry(k) for k in HEARING_KEYS if not requirements.get(k)]
+        missing_required = [
+            entry(k) for k in HEARING_REQUIRED if not requirements.get(k)
+        ]
+        return {
+            "project_id": project["id"],
+            "project_name": project["name"],
+            "recorded": {HEARING_LABELS[k]: v for k, v in requirements.items()},
+            "missing": missing,
+            "missing_required": missing_required,
+            "ready_for_proposal": not missing_required,
+        }
 
     def stale(self, days: int = 14, stage: str | None = None) -> list[dict[str, Any]]:
         """一定期間動いていない進行中案件を返す。追客漏れの検知に使う。

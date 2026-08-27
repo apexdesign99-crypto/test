@@ -18,7 +18,7 @@ from typing import Any
 
 from .agent import Employee, Listener
 from .config import office_root
-from .company import STAGES, CompanyError, OfficeProfile, ProjectLedger
+from .company import KINDS, STAGES, CompanyError, OfficeProfile, ProjectLedger
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
 from .workspace import Workspace, WorkspaceError, roster
 
@@ -139,6 +139,32 @@ def cmd_hire(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_unit_prices(raw: str) -> dict[str, list[int]]:
+    """"戸建住宅:80-100,店舗:60-90" 形式を辞書に変換する。"""
+    prices: dict[str, list[int]] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise ValueError(f"坪単価の書式が不正です: {chunk} (例 戸建住宅:80-100)")
+        kind, span = (part.strip() for part in chunk.split(":", 1))
+        if kind not in KINDS:
+            raise ValueError(f"不正な用途種別です: {kind} (選択肢: {'/'.join(KINDS)})")
+        try:
+            low, high = (int(v.strip()) for v in span.split("-", 1))
+        except ValueError:
+            raise ValueError(
+                f"坪単価は「下限-上限」の整数で指定してください: {chunk}"
+            ) from None
+        if low <= 0 or high < low:
+            raise ValueError(f"坪単価の範囲が不正です: {chunk}")
+        prices[kind] = [low, high]
+    if not prices:
+        raise ValueError("坪単価が 1 件も指定されていません")
+    return prices
+
+
 def cmd_office(args: argparse.Namespace) -> int:
     """事務所プロフィールを作成・確認する。
 
@@ -152,6 +178,15 @@ def cmd_office(args: argparse.Namespace) -> int:
         return 0
 
     changed = False
+    if args.unit_prices is not None:
+        office.unit_prices = _parse_unit_prices(args.unit_prices)
+        changed = True
+    if args.design_fee_rate is not None:
+        office.design_fee_rate = args.design_fee_rate
+        changed = True
+    if args.design_fee_minimum is not None:
+        office.design_fee_minimum = args.design_fee_minimum
+        changed = True
     for attr in ("name", "location", "fee_policy", "business_hours", "contact", "notes"):
         value = getattr(args, attr, None)
         if value is not None:
@@ -182,6 +217,60 @@ def cmd_office(args: argparse.Namespace) -> int:
     print(f"  {path}")
     print()
     print(office.as_prompt())
+    return 0
+
+
+def cmd_hearing(args: argparse.Namespace) -> int:
+    """案件のヒアリング状況を表示する。提案に進んでよいかの判断材料。"""
+    gaps = ProjectLedger(args.office).hearing_gaps(args.project_id)
+    print(BOLD(f"[{gaps['project_id']}] {gaps['project_name']} のヒアリング状況"))
+
+    if gaps["recorded"]:
+        print(BOLD("\n  聞けている項目"))
+        for label, value in gaps["recorded"].items():
+            print(f"    {_pad(label, 34)}{value}")
+    else:
+        print(DIM("\n  聞けている項目はまだありません。"))
+
+    if gaps["missing_required"]:
+        print(RED(f"\n  提案前に必要な未確認項目 {len(gaps['missing_required'])} 件"))
+        for item in gaps["missing_required"]:
+            print(RED(f"    ・{item['label']}"))
+    optional = [
+        item for item in gaps["missing"] if item not in gaps["missing_required"]
+    ]
+    if optional:
+        print(DIM(f"\n  その他の未確認項目 {len(optional)} 件"))
+        for item in optional:
+            print(DIM(f"    ・{item['label']}"))
+
+    print()
+    if gaps["ready_for_proposal"]:
+        print(BOLD("  → 必須項目は揃っています。提案に進めます。"))
+    else:
+        print(RED("  → 必須項目が未確認です。提案より先に確認してください。"))
+    return 0
+
+
+def cmd_estimate(args: argparse.Namespace) -> int:
+    """工事費と設計監理料の概算を算定する。"""
+    office = OfficeProfile.load(args.office)
+    result = office.estimate(
+        args.kind, floor_area_tsubo=args.tsubo, floor_area_sqm=args.sqm
+    )
+    cost = result["construction_cost"]
+    fee = result["design_fee"]
+    print(BOLD(f"{result['kind']} 延床 {result['floor_area_tsubo']} 坪 "
+               f"({result['floor_area_sqm']} ㎡) の概算"))
+    print(f"  {_pad('坪単価', 14)}{result['unit_price_range'][0]}〜"
+          f"{result['unit_price_range'][1]} 万円/坪")
+    print(f"  {_pad('工事費', 14)}{cost['low']:,}〜{cost['high']:,} 万円")
+    note = f"工事費の {fee['rate_percent']}%"
+    if fee["applied_minimum"]:
+        note += f"(最低額 {fee['minimum']:,} 万円を適用)"
+    print(f"  {_pad('設計監理料', 14)}{fee['low']:,}〜{fee['high']:,} 万円  " + DIM(note))
+    print()
+    print(DIM(f"  {result['caveat']}"))
     return 0
 
 
@@ -460,7 +549,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_office.add_argument("--business-hours", dest="business_hours", help="営業時間")
     p_office.add_argument("--contact", help="連絡先")
     p_office.add_argument("--notes", help="補足")
+    p_office.add_argument(
+        "--unit-prices",
+        dest="unit_prices",
+        help='概算の坪単価。"戸建住宅:80-100,店舗:60-90" 形式(万円/坪)',
+    )
+    p_office.add_argument(
+        "--design-fee-rate", dest="design_fee_rate", type=float, help="設計監理料率 (%%)"
+    )
+    p_office.add_argument(
+        "--design-fee-minimum",
+        dest="design_fee_minimum",
+        type=int,
+        help="設計監理料の最低額(万円)",
+    )
     p_office.set_defaults(func=cmd_office)
+
+    p_hearing = sub.add_parser("hearing", help="案件のヒアリング状況を確認する")
+    p_hearing.add_argument("project_id", help="案件 ID")
+    p_hearing.set_defaults(func=cmd_hearing)
+
+    p_estimate = sub.add_parser("estimate", help="工事費と設計監理料の概算を算定する")
+    p_estimate.add_argument("--kind", required=True, choices=list(KINDS), help="用途種別")
+    p_estimate.add_argument("--tsubo", type=float, help="延床面積(坪)")
+    p_estimate.add_argument("--sqm", type=float, help="延床面積(㎡)")
+    p_estimate.set_defaults(func=cmd_estimate)
 
     p_stale = sub.add_parser("stale", help="追客が止まっている案件を洗い出す")
     p_stale.add_argument("--days", type=int, default=14, help="何日以上動いていないか(既定 14)")

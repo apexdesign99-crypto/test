@@ -10,7 +10,16 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .company import KINDS, STAGES, STATUSES, CompanyError, ProjectLedger
+from .company import (
+    HEARING_ITEMS,
+    HEARING_KEYS,
+    KINDS,
+    STAGES,
+    STATUSES,
+    CompanyError,
+    OfficeProfile,
+    ProjectLedger,
+)
 from .workspace import Workspace, WorkspaceError, now
 
 # Opus 4.6 以降で使えるサーバ側 Web 検索ツール。
@@ -55,6 +64,7 @@ def build_tools(
 ) -> dict[str, Tool]:
     """ワークスペースと案件台帳に紐づいた全ツールを構築する。"""
     ledger = ledger or ProjectLedger(workspace.root.parent)
+    office = OfficeProfile.load(workspace.root.parent)
     me = workspace.employee_id
 
     def current_datetime() -> dict[str, Any]:
@@ -193,6 +203,26 @@ def build_tools(
     def source_report(since: str | None = None) -> dict:
         report = ledger.by_source(since=since)
         return {"since": since, "sources": report}
+
+    def record_hearing(project_id: str, **items: str) -> dict:
+        updated = ledger.record_hearing(project_id, items, by=me)
+        return {
+            "id": updated["id"],
+            "requirements": updated["requirements"],
+            "gaps": ledger.hearing_gaps(project_id),
+        }
+
+    def hearing_gaps(project_id: str) -> dict:
+        return ledger.hearing_gaps(project_id)
+
+    def estimate_cost(
+        kind: str,
+        floor_area_tsubo: float | None = None,
+        floor_area_sqm: float | None = None,
+    ) -> dict:
+        return office.estimate(
+            kind, floor_area_tsubo=floor_area_tsubo, floor_area_sqm=floor_area_sqm
+        )
 
     def list_files(subdir: str = "") -> dict:
         files = workspace.list_files(subdir)
@@ -420,6 +450,47 @@ def build_tools(
                 [],
             ),
             source_report,
+        ),
+        Tool(
+            "record_hearing",
+            "初回相談などで聞けた内容を案件に記録する。聞けた項目だけ渡せばよい。"
+            "渡さなかった項目は未確認のまま残り、hearing_gaps で拾える。"
+            "推測で埋めてはいけない。聞けていない項目は渡さないこと。",
+            _obj(
+                {
+                    "project_id": {"type": "string", "description": "案件 ID"},
+                    **{
+                        key: {"type": "string", "description": f"{label} — 聞けた内容をそのまま"}
+                        for key, label, _ in HEARING_ITEMS
+                    },
+                },
+                ["project_id"],
+            ),
+            record_hearing,
+        ),
+        Tool(
+            "hearing_gaps",
+            "案件のヒアリング状況を返す。聞けた内容、未確認の項目、"
+            "提案に進んでよいか(必須項目が埋まっているか)が分かる。"
+            "プラン提案・見積の話をする前に必ず確認すること。",
+            _obj({"project_id": {"type": "string", "description": "案件 ID"}}, ["project_id"]),
+            hearing_gaps,
+        ),
+        Tool(
+            "estimate_cost",
+            "延床面積から工事費と設計監理料の概算レンジを算定する。"
+            "金額を出すときは必ずこれを使い、自分で掛け算をしないこと。"
+            "事務所に坪単価が未設定の用途では失敗する。その場合は概算金額を書かず、"
+            "算定できない旨を報告すること。",
+            _obj(
+                {
+                    "kind": {"type": "string", "enum": list(KINDS), "description": "用途種別"},
+                    "floor_area_tsubo": {"type": "number", "description": "延床面積(坪)"},
+                    "floor_area_sqm": {"type": "number", "description": "延床面積(㎡)"},
+                },
+                ["kind"],
+            ),
+            estimate_cost,
         ),
         Tool(
             "list_files",

@@ -201,3 +201,69 @@ def test_流入経路ツールが集計を返す(workspace, tmp_path):
     ledger.add("A", source="Instagram")
     result = json.loads(box.run("source_report", {})[0])
     assert result["sources"][0]["source"] == "Instagram"
+
+
+def _sales_box(workspace, tmp_path, allowed, office=None):
+    from ai_employee.company import OfficeProfile, ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    (office or OfficeProfile(
+        name="A設計",
+        unit_prices={"戸建住宅": [80, 100]},
+        design_fee_rate=10,
+        design_fee_minimum=300,
+    )).save(tmp_path)
+    ledger = ProjectLedger(tmp_path)
+    return ToolBox(workspace, allowed, ledger=ledger), ledger
+
+
+def test_ヒアリング記録は残りの未確認項目も返す(workspace, tmp_path):
+    """社員が次に何を聞くべきかを、同じ結果の中で分かるようにする。"""
+    box, ledger = _sales_box(workspace, tmp_path, ["record_hearing"])
+    pid = ledger.add("佐々木様 新築")["id"]
+
+    result = json.loads(
+        box.run("record_hearing", {"project_id": pid, "budget": "総額4500万円"})[0]
+    )
+    assert result["requirements"]["budget"] == "総額4500万円"
+    assert result["gaps"]["ready_for_proposal"] is False
+    assert any(m["key"] == "decision_maker" for m in result["gaps"]["missing_required"])
+
+
+def test_推測で埋めた項目はスキーマ外なら弾かれる(workspace, tmp_path):
+    box, ledger = _sales_box(workspace, tmp_path, ["record_hearing"])
+    pid = ledger.add("佐々木様 新築")["id"]
+    output, is_error = box.run("record_hearing", {"project_id": pid, "mood": "前向き"})
+    assert is_error
+    assert "未知です" in output
+
+
+def test_概算ツールは根拠と但し書きを返す(workspace, tmp_path):
+    box, _ = _sales_box(workspace, tmp_path, ["estimate_cost"])
+    result = json.loads(
+        box.run("estimate_cost", {"kind": "戸建住宅", "floor_area_tsubo": 35})[0]
+    )
+    assert result["construction_cost"] == {"low": 2800, "high": 3500}
+    assert "延床 35.0 坪" in result["basis"]
+    assert "確定金額ではない" in result["caveat"]
+
+
+def test_単価未設定の用途はエラー結果になり概算が出ない(workspace, tmp_path):
+    box, _ = _sales_box(workspace, tmp_path, ["estimate_cost"])
+    output, is_error = box.run(
+        "estimate_cost", {"kind": "共同住宅", "floor_area_tsubo": 100}
+    )
+    assert is_error
+    assert "未設定" in output
+    assert "書いてはいけません" in output
+
+
+def test_ヒアリング状況ツールが提案可否を返す(workspace, tmp_path):
+    from ai_employee.company import HEARING_REQUIRED
+
+    box, ledger = _sales_box(workspace, tmp_path, ["hearing_gaps"])
+    pid = ledger.add("佐々木様 新築")["id"]
+    assert json.loads(box.run("hearing_gaps", {"project_id": pid})[0])["ready_for_proposal"] is False
+
+    ledger.record_hearing(pid, {k: "確認済み" for k in HEARING_REQUIRED})
+    assert json.loads(box.run("hearing_gaps", {"project_id": pid})[0])["ready_for_proposal"] is True
