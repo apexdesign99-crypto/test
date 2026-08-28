@@ -122,6 +122,11 @@
         <label><input type="checkbox" name="seismic_table_verified"> 必要壁量の係数表が現行の告示値であることを確認した</label>
       </div>
       <div class="grid-2">
+        <label class="field"><span>本体工事原価 (円/坪)</span><input type="number" name="unit_cost_per_tsubo" placeholder="457000" step="any" min="0"></label>
+        <label class="field"><span>粗利率 (%)</span><input type="number" name="gross_margin" placeholder="25" step="any" min="0" max="90"></label>
+      </div>
+      <p class="hint">原価坪単価は実績値。未入力なら構造別の既定値（木造 457,000円/坪）を使います。</p>
+      <div class="grid-2">
         <label class="field"><span>目標延床 (m²)</span><input type="number" name="target_floor_area_m2" placeholder="自動" step="any" min="20"></label>
         <label class="field">
           <span>相場坪単価 (円) <button type="button" class="ghost" id="fetch-market">周辺相場から取得</button></span>

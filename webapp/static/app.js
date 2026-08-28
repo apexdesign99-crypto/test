@@ -235,6 +235,8 @@ function collectPayload() {
       floor_height_m: Number(form.floor_height_m.value) || 2.9,
       ceiling_height_m: Number(form.ceiling_height_m.value) || 2.4,
       roof_weight: form.roof_weight.value,
+      unit_cost_per_tsubo: numberOrNull(form.unit_cost_per_tsubo.value),
+      gross_margin: form.gross_margin.value === "" ? null : Number(form.gross_margin.value) / 100,
       seismic_table_verified: form.seismic_table_verified.checked,
       target_floor_area_m2: numberOrNull(form.target_floor_area_m2.value),
       market_unit_price_per_tsubo: numberOrNull(form.market_unit_price_per_tsubo.value),
@@ -572,7 +574,7 @@ function renderStructure(data) {
       }</div>`;
 
   card.innerHTML = `
-    <h2 class="card-title">3''. 壁量計算（令46条4項）</h2>
+    <h2 class="card-title">5. 壁量計算（令46条4項）</h2>
     ${banner}
     <div class="metrics">
       ${metric("壁量", report.quantity_ok ? "充足" : "不足", `最小充足率 ${fmtNum(report.worst_ratio, 2)}`)}
@@ -635,7 +637,7 @@ function renderDrawings(data) {
   ];
 
   card.innerHTML = `
-    <h2 class="card-title">4. 申請図面</h2>
+    <h2 class="card-title">6. 申請図面</h2>
     <div class="tabs">${tabs
       .map((t, i) => `<button type="button" class="tab ${i === 0 ? "active" : ""}" data-tab="${t.id}">${t.label}</button>`)
       .join("")}</div>
@@ -659,13 +661,13 @@ function renderDrawings(data) {
 function renderPlan(data) {
   const card = document.getElementById("plan-card");
   if (!data.building) {
-    card.innerHTML = `<h2 class="card-title">3. AI 間取り</h2>
+    card.innerHTML = `<h2 class="card-title">4. AI 間取り</h2>
       <p class="hint">建築可能判定で不可となったため、間取り以降は算出していません。</p>`;
     return;
   }
   const b = data.building;
   card.innerHTML = `
-    <h2 class="card-title">3'. AI 間取り</h2>
+    <h2 class="card-title">4. AI 間取り</h2>
     <div class="metrics">
       ${metric("間取り", b.ldk_type)}
       ${metric("構造・階数", `${escapeHtml(b.structure)} ${b.storeys}<small> 階建</small>`)}
@@ -717,22 +719,34 @@ function renderCost(data) {
       .join("");
 
   card.innerHTML = `
-    <h2 class="card-title">4. 建築費 / 総事業費</h2>
+    <h2 class="card-title">7. 建築費 / 総事業費</h2>
     <div class="metrics">
-      ${metric("土地取得費", fmtJpy(c.land_price_jpy))}
+      ${metric("工事原価", fmtJpy(c.cost_subtotal_jpy), `坪 ${Math.round(
+        c.cost_subtotal_jpy / (data.building.total_floor_area_m2 / 3.305785)
+      ).toLocaleString("ja-JP")} 円`)}
+      ${metric("粗利", fmtJpy(c.margin_jpy), `粗利率 ${(c.margin_rate * 100).toFixed(1)}%`)}
+      ${metric("請負金額（税抜）", fmtJpy(c.contract_jpy))}
       ${metric("建築費（税込）", fmtJpy(c.construction_total_jpy), `坪単価 ${(
         data.summary?.construction_unit_price_per_tsubo || 0
       ).toLocaleString("ja-JP")} 円`)}
-      ${metric("諸費用", fmtJpy(c.other_total_jpy))}
-      ${metric("総事業費", fmtJpy(c.project_total_jpy))}
+      ${metric("総事業費", fmtJpy(c.project_total_jpy), `土地 ${fmtJpy(c.land_price_jpy)}`)}
     </div>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>建築費の内訳</th><th class="num">金額</th><th>備考</th></tr></thead>
+        <thead><tr><th>工事原価 → 請負金額</th><th class="num">金額</th><th>備考</th></tr></thead>
         <tbody>
           ${rows(c.construction_items)}
+          <tr class="total"><td>工事原価 計</td><td class="num">${c.cost_subtotal_jpy.toLocaleString(
+            "ja-JP"
+          )} 円</td><td></td></tr>
+          <tr><td>粗利</td><td class="num">${c.margin_jpy.toLocaleString("ja-JP")} 円</td>
+            <td>粗利率 ${(c.margin_rate * 100).toFixed(1)}%</td></tr>
+          <tr class="total"><td>請負金額（税抜）</td><td class="num">${c.contract_jpy.toLocaleString(
+            "ja-JP"
+          )} 円</td><td></td></tr>
+          ${rows(c.soft_items || [])}
           <tr><td>消費税</td><td class="num">${c.construction_tax_jpy.toLocaleString("ja-JP")} 円</td><td></td></tr>
-          <tr class="total"><td>建築費 合計</td><td class="num">${c.construction_total_jpy.toLocaleString(
+          <tr class="total"><td>建築費 合計（税込）</td><td class="num">${c.construction_total_jpy.toLocaleString(
             "ja-JP"
           )} 円</td><td></td></tr>
         </tbody>
@@ -783,7 +797,7 @@ function renderExports(data) {
   ];
 
   document.getElementById("export-card").innerHTML = `
-    <h2 class="card-title">6. 成果物のダウンロード</h2>
+    <h2 class="card-title">8. 成果物のダウンロード</h2>
     <div class="exports">
       ${buttons
         .map(

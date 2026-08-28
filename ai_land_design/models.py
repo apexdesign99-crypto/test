@@ -443,16 +443,44 @@ class CostItem:
 
 @dataclass
 class CostBreakdown:
-    """建築費 / 総事業費。"""
+    """建築費 / 総事業費。
 
-    construction_items: List[CostItem]
-    other_items: List[CostItem]
+    工事費は「工事原価 → 粗利 → 請負金額」の順に積む。原価は施工者が実際に
+    支払う費用、請負金額は建築主が支払う金額で、両方を分けて持つことで
+    工務店の見積と施主向けの資金計画のどちらにも使える。
+    """
+
+    construction_items: List[CostItem]  # 工事原価の内訳（本体・付帯・現場経費）
+    other_items: List[CostItem]  # 土地取得に伴う諸費用
     land_price_jpy: int
+    margin_jpy: int = 0  # 粗利（請負金額 − 工事原価）
+    soft_items: List[CostItem] = field(default_factory=list)  # 設計監理・申請・調査
     tax_rate: float = 0.10
 
     @property
-    def construction_subtotal_jpy(self) -> int:
+    def cost_subtotal_jpy(self) -> int:
+        """工事原価の合計（税抜）。"""
         return sum(i.amount_jpy for i in self.construction_items)
+
+    @property
+    def soft_subtotal_jpy(self) -> int:
+        """設計監理・申請・調査の合計（税抜）。"""
+        return sum(i.amount_jpy for i in self.soft_items)
+
+    @property
+    def contract_jpy(self) -> int:
+        """請負金額（税抜）= 工事原価 + 粗利。"""
+        return self.cost_subtotal_jpy + self.margin_jpy
+
+    @property
+    def margin_rate(self) -> float:
+        """粗利率（粗利 ÷ 請負金額）。"""
+        return self.margin_jpy / self.contract_jpy if self.contract_jpy else 0.0
+
+    @property
+    def construction_subtotal_jpy(self) -> int:
+        """建築費の合計（税抜）= 請負金額 + 設計監理等。"""
+        return self.contract_jpy + self.soft_subtotal_jpy
 
     @property
     def construction_tax_jpy(self) -> int:
@@ -460,6 +488,7 @@ class CostBreakdown:
 
     @property
     def construction_total_jpy(self) -> int:
+        """建築費（税込）。建築主が支払う金額。"""
         return self.construction_subtotal_jpy + self.construction_tax_jpy
 
     @property
@@ -473,6 +502,12 @@ class CostBreakdown:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "construction_items": [i.to_dict() for i in self.construction_items],
+            "cost_subtotal_jpy": self.cost_subtotal_jpy,
+            "margin_jpy": self.margin_jpy,
+            "margin_rate": round(self.margin_rate, 4),
+            "contract_jpy": self.contract_jpy,
+            "soft_items": [i.to_dict() for i in self.soft_items],
+            "soft_subtotal_jpy": self.soft_subtotal_jpy,
             "construction_subtotal_jpy": self.construction_subtotal_jpy,
             "construction_tax_jpy": self.construction_tax_jpy,
             "construction_total_jpy": self.construction_total_jpy,

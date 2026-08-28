@@ -68,6 +68,8 @@ class Options:
     project_name: str = "AI LAND DESIGN"
     ceiling_height_m: float = 2.4
     roof_weight: str = "軽い"  # 壁量計算に使う屋根の重さ（軽い / 重い）
+    unit_cost_per_tsubo: Optional[int] = None  # 本体工事原価の坪単価（実績値）
+    gross_margin: Optional[float] = None  # 粗利率（粗利 ÷ 請負金額）
     seismic_table_verified: bool = False  # 係数表が現行の告示値だと確認済みか
     application: ApplicationInfo = field(default_factory=ApplicationInfo)
     listing: ListingInfo = field(default_factory=ListingInfo)  # 販売図面の記載事項
@@ -84,6 +86,8 @@ class Options:
             "project_name": self.project_name,
             "ceiling_height_m": self.ceiling_height_m,
             "roof_weight": self.roof_weight,
+            "unit_cost_per_tsubo": self.unit_cost_per_tsubo,
+            "gross_margin": self.gross_margin,
             "seismic_table_verified": self.seismic_table_verified,
             "application": self.application.to_dict(),
             "listing": self.listing.to_dict(),
@@ -173,11 +177,16 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         building.roof = "陸屋根"
     building.height_m = min(exterior_module.total_height_m(building), envelope.max_height_m)
 
+    rates = cost_module.Rates()
+    if options.gross_margin is not None:
+        rates.gross_margin = options.gross_margin
     breakdown = cost_module.estimate(
         site,
         building,
         grade=options.grade,
+        rates=rates,
         land_price_jpy=options.land_price_jpy,
+        unit_cost_per_tsubo=options.unit_cost_per_tsubo,
     )
     compliance = documents_module.compliance_check(envelope, building)
 
@@ -293,7 +302,7 @@ def to_markdown(result: ProjectResult) -> str:
 
     breakdown = result.cost
     lines += [
-        "## 4. 建築費",
+        "## 4. 建築費（工事原価 → 請負金額）",
         "",
         "| 項目 | 金額 | 備考 |",
         "| --- | ---: | --- |",
@@ -301,8 +310,16 @@ def to_markdown(result: ProjectResult) -> str:
     for item in breakdown.construction_items:
         lines.append(f"| {item.name} | {item.amount_jpy:,} 円 | {item.note} |")
     lines += [
+        f"| **工事原価 計** | **{breakdown.cost_subtotal_jpy:,} 円** | "
+        f"坪 {cost_module.unit_cost_price_per_tsubo(breakdown, building.total_floor_area_m2):,} 円 |",
+        f"| 粗利 | {breakdown.margin_jpy:,} 円 | 粗利率 {breakdown.margin_rate:.1%} |",
+        f"| **請負金額（税抜）** | **{breakdown.contract_jpy:,} 円** | |",
+    ]
+    for item in breakdown.soft_items:
+        lines.append(f"| {item.name} | {item.amount_jpy:,} 円 | {item.note} |")
+    lines += [
         f"| 消費税（{breakdown.tax_rate:.0%}） | {breakdown.construction_tax_jpy:,} 円 | |",
-        f"| **建築費 合計** | **{breakdown.construction_total_jpy:,} 円** | "
+        f"| **建築費 合計（税込）** | **{breakdown.construction_total_jpy:,} 円** | "
         f"坪単価 {cost_module.unit_cost_per_tsubo(breakdown, building.total_floor_area_m2):,} 円 |",
         "",
         "## 5. 総事業費",

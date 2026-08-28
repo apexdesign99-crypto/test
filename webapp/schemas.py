@@ -138,6 +138,12 @@ class OptionsIn(BaseModel):
     floor_height_m: float = Field(default=2.9, ge=2.2, le=5.0)
     ceiling_height_m: float = Field(default=2.4, ge=1.8, le=4.0)
     roof_weight: str = Field(default="軽い", description="壁量計算に使う屋根の重さ")
+    unit_cost_per_tsubo: Optional[int] = Field(
+        default=None, ge=0, le=5_000_000, description="本体工事原価の坪単価（実績値）"
+    )
+    gross_margin: Optional[float] = Field(
+        default=None, ge=0, le=0.9, description="粗利率（粗利 ÷ 請負金額）"
+    )
     seismic_table_verified: bool = Field(
         default=False, description="必要壁量の係数表が現行の告示値であることを確認済みか"
     )
@@ -180,6 +186,8 @@ class OptionsIn(BaseModel):
             floor_height_m=self.floor_height_m,
             ceiling_height_m=self.ceiling_height_m,
             roof_weight=self.roof_weight,
+            unit_cost_per_tsubo=self.unit_cost_per_tsubo,
+            gross_margin=self.gross_margin,
             seismic_table_verified=self.seismic_table_verified,
             target_floor_area_m2=self.target_floor_area_m2,
             market_unit_price_per_tsubo=self.market_unit_price_per_tsubo,
