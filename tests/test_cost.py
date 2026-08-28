@@ -19,10 +19,33 @@ class CostTest(unittest.TestCase):
         expected = round(tsubo * cost.UNIT_COST_PER_TSUBO[Structure.WOOD])
         self.assertEqual(items[0].amount_jpy, expected)
 
-    def test_actual_cost_matches_the_reference_figure(self):
-        """実績（延床35坪・本体工事原価1,600万円）と一致すること。"""
-        items = cost.cost_items(35 * cost.TSUBO_M2, Structure.WOOD, "標準")
-        self.assertAlmostEqual(items[0].amount_jpy, 16_000_000, delta=50_000)
+    def test_actual_cost_matches_the_reference_figures(self):
+        """実績（35坪：分譲の工事原価1,600万円／注文の売り2,000万円）と一致すること。"""
+        area = 35 * cost.TSUBO_M2
+        items = cost.cost_items(area, Structure.WOOD, "標準")
+        subtotal = sum(i.amount_jpy for i in items)
+        self.assertAlmostEqual(subtotal, 16_000_000, delta=50_000)
+
+        contract = subtotal + cost.margin_for(subtotal)
+        self.assertAlmostEqual(contract, 20_000_000, delta=60_000)
+
+    def test_incidental_is_included_in_the_unit_cost_by_default(self):
+        """既定では付帯工事・現場経費は坪単価に含む（実績値がそうであるため）。"""
+        rates = Rates()
+        self.assertEqual(rates.incidental, 0.0)
+        self.assertEqual(rates.site_overhead, 0.0)
+        items = cost.cost_items(100.0, Structure.WOOD)
+        self.assertEqual(len(items), 1)
+        self.assertIn("付帯工事・現場経費を含む", items[0].note)
+
+    def test_incidental_can_be_itemised(self):
+        items = cost.cost_items(100.0, Structure.WOOD, rates=Rates(incidental=0.15, site_overhead=0.05))
+        names = [i.name for i in items]
+        self.assertIn("付帯工事原価", names)
+        self.assertIn("現場経費", names)
+
+    def test_default_margin_matches_the_actual_rate(self):
+        self.assertAlmostEqual(Rates().gross_margin, 0.20, places=6)
 
     def test_custom_unit_cost_overrides_the_default(self):
         items = cost.cost_items(
@@ -132,3 +155,69 @@ class CostTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpecDevelopmentTest(unittest.TestCase):
+    """分譲（建売）事業の収支。"""
+
+    def setUp(self):
+        self.site = make_site(land_price_jpy=95_000_000)
+        self.envelope = feasibility.evaluate(self.site)
+        self.building = layout.generate(self.site, self.envelope, target_floor_area_m2=115.7)
+        self.breakdown = cost.estimate(self.site, self.building)
+
+    def test_sale_price_is_derived_from_the_target_margin(self):
+        plan = cost.spec_development(self.breakdown, target_margin=0.18)
+        self.assertAlmostEqual(plan.profit_rate, 0.18, places=3)
+        self.assertGreater(plan.sale_price_jpy, plan.total_cost_jpy)
+
+    def test_explicit_sale_price_changes_the_profit(self):
+        auto = cost.spec_development(self.breakdown)
+        cheaper = cost.spec_development(self.breakdown, sale_price_jpy=auto.sale_price_jpy - 10_000_000)
+        self.assertLess(cheaper.profit_jpy, auto.profit_jpy)
+        self.assertLess(cheaper.profit_rate, auto.profit_rate)
+
+    def test_costs_add_up(self):
+        plan = cost.spec_development(self.breakdown)
+        self.assertEqual(
+            plan.total_cost_jpy,
+            plan.land_cost_jpy + plan.acquisition_cost_jpy + plan.construction_cost_jpy
+            + plan.design_cost_jpy + plan.sga_jpy,
+        )
+        self.assertEqual(plan.profit_jpy, plan.sale_price_jpy - plan.total_cost_jpy)
+
+    def test_construction_cost_includes_tax(self):
+        plan = cost.spec_development(self.breakdown, tax_rate=0.10)
+        self.assertAlmostEqual(
+            plan.construction_cost_jpy, self.breakdown.cost_subtotal_jpy * 1.10, delta=2
+        )
+
+    def test_higher_land_price_raises_the_sale_price(self):
+        expensive = cost.estimate(self.site, self.building, land_price_jpy=150_000_000)
+        self.assertGreater(
+            cost.spec_development(expensive).sale_price_jpy,
+            cost.spec_development(self.breakdown).sale_price_jpy,
+        )
+
+    def test_pipeline_produces_the_plan_only_for_spec_homes(self):
+        from ai_land_design import pipeline
+
+        custom = pipeline.run(self.site, pipeline.Options(business_model="注文住宅"))
+        spec = pipeline.run(self.site, pipeline.Options(business_model="分譲住宅"))
+        self.assertIsNone(custom.development)
+        self.assertIsNotNone(spec.development)
+        self.assertIn("### 分譲事業の収支", pipeline.to_markdown(spec))
+
+    def test_pipeline_honours_an_explicit_sale_price(self):
+        from ai_land_design import pipeline
+
+        result = pipeline.run(
+            self.site,
+            pipeline.Options(business_model="分譲住宅", sale_price_jpy=150_000_000),
+        )
+        self.assertEqual(result.development.sale_price_jpy, 150_000_000)
+
+    def test_serializable(self):
+        import json
+
+        json.dumps(cost.spec_development(self.breakdown).to_dict(), ensure_ascii=False)

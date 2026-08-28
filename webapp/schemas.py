@@ -144,6 +144,11 @@ class OptionsIn(BaseModel):
     gross_margin: Optional[float] = Field(
         default=None, ge=0, le=0.9, description="粗利率（粗利 ÷ 請負金額）"
     )
+    business_model: str = Field(default="注文住宅", description="注文住宅 / 分譲住宅")
+    sale_price_jpy: Optional[int] = Field(default=None, ge=0, description="分譲の販売価格")
+    spec_target_margin: Optional[float] = Field(
+        default=None, ge=0, le=0.9, description="分譲の目標事業利益率"
+    )
     seismic_table_verified: bool = Field(
         default=False, description="必要壁量の係数表が現行の告示値であることを確認済みか"
     )
@@ -155,6 +160,13 @@ class OptionsIn(BaseModel):
     def _check_structure(cls, value: str) -> str:
         if value not in {s.value for s in Structure}:
             raise ValueError(f"未知の構造: {value}")
+        return value
+
+    @field_validator("business_model")
+    @classmethod
+    def _check_business_model(cls, value: str) -> str:
+        if value not in ("注文住宅", "分譲住宅"):
+            raise ValueError("事業形態は「注文住宅」か「分譲住宅」で指定してください")
         return value
 
     @field_validator("roof_weight")
@@ -188,6 +200,9 @@ class OptionsIn(BaseModel):
             roof_weight=self.roof_weight,
             unit_cost_per_tsubo=self.unit_cost_per_tsubo,
             gross_margin=self.gross_margin,
+            business_model=self.business_model,
+            sale_price_jpy=self.sale_price_jpy,
+            spec_target_margin=self.spec_target_margin,
             seismic_table_verified=self.seismic_table_verified,
             target_floor_area_m2=self.target_floor_area_m2,
             market_unit_price_per_tsubo=self.market_unit_price_per_tsubo,

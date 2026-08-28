@@ -104,12 +104,26 @@ def _spec_table(
     return y + row_height * len(rows)
 
 
+def sheet_price(site: Site, result, info: ListingInfo) -> Tuple[int, str]:
+    """図面に載せる価格と、その名目。
+
+    分譲（建売）の場合は土地建物一体の販売価格、それ以外は土地価格を表示する。
+    """
+    if info.price_jpy:
+        return info.price_jpy, "価格"
+    development = getattr(result, "development", None)
+    if development is not None:
+        return development.sale_price_jpy, "販売価格（土地＋建物）"
+    return site.land_price_jpy or 0, "土地価格"
+
+
 def specification_rows(site: Site, result, info: ListingInfo) -> List[Tuple[str, str]]:
     """物件概要表の項目。"""
-    price = info.price_jpy or site.land_price_jpy
+    price, price_label = sheet_price(site, result, info)
     tsubo_price = None
-    if price and site.area_tsubo > 0:
-        tsubo_price = int(round(price / site.area_tsubo))
+    land_price = site.land_price_jpy
+    if land_price and site.area_tsubo > 0:
+        tsubo_price = int(round(land_price / site.area_tsubo))
 
     road = site.widest_road
     road_text = (
@@ -127,8 +141,8 @@ def specification_rows(site: Site, result, info: ListingInfo) -> List[Tuple[str,
     rows: List[Tuple[str, str]] = [
         ("所在地", site.address or BLANK),
         ("交通", access),
-        ("価格", format_price(price)),
-        ("坪単価", f"{tsubo_price:,}円" if tsubo_price else BLANK),
+        (price_label, format_price(price)),
+        ("土地坪単価", f"{tsubo_price:,}円" if tsubo_price else BLANK),
         ("土地面積", f"{site.area_m2:.2f}m²（{site.area_tsubo:.2f}坪）"),
         ("私道負担", info.private_road_burden),
         ("用途地域", zoning.use_district.value),
@@ -164,9 +178,10 @@ def sheet_canvas(site: Site, result, info: Optional[ListingInfo] = None) -> Canv
     canvas.rect_px(0, 0, SHEET_WIDTH, 46, fill=BAND, stroke=BAND)
     canvas.label_px(PAD, 20, info.property_name, 15, color="#ffffff", weight="bold")
     canvas.label_px(PAD, 37, site.address or "", 9, color="#cfc9bc")
-    price = info.price_jpy or site.land_price_jpy
+    price, price_label = sheet_price(site, result, info)
     canvas.label_px(SHEET_WIDTH - PAD, 30, format_price(price), 20, anchor="end",
                     color="#ffffff", weight="bold")
+    canvas.label_px(SHEET_WIDTH - PAD, 41, price_label, 7.5, anchor="end", color="#cfc9bc")
 
     top = 58.0
     left_w = SHEET_WIDTH * 0.46 - PAD

@@ -38,10 +38,20 @@ class SpecificationTest(unittest.TestCase):
         self.assertEqual(self.rows["用途地域"], self.site.zoning.use_district.value)
         self.assertIn("60％", self.rows["建蔽率／容積率"])
         self.assertIn(f"{self.site.area_m2:.2f}m²", self.rows["土地面積"])
-        self.assertEqual(self.rows["価格"], "9,500万円")
+        self.assertEqual(self.rows["土地価格"], "9,500万円")
 
-    def test_tsubo_price_is_calculated(self):
-        self.assertIn("円", self.rows["坪単価"])
+    def test_spec_home_shows_the_sale_price(self):
+        """分譲（建売）は土地建物一体の販売価格を載せる。"""
+        result = pipeline.run(self.site, pipeline.Options(business_model="分譲住宅"))
+        rows = dict(specification_rows(self.site, result, ListingInfo()))
+        self.assertIn("販売価格（土地＋建物）", rows)
+        self.assertNotIn("土地価格", rows)
+        price, label = listing.sheet_price(self.site, result, ListingInfo())
+        self.assertEqual(price, result.development.sale_price_jpy)
+        self.assertEqual(label, "販売価格（土地＋建物）")
+
+    def test_land_tsubo_price_is_calculated(self):
+        self.assertIn("円", self.rows["土地坪単価"])
 
     def test_access_is_derived_from_station_distance(self):
         self.assertIn("640m", self.rows["交通"])
@@ -66,7 +76,7 @@ class SpecificationTest(unittest.TestCase):
     def test_listing_info_overrides(self):
         info = ListingInfo(price_jpy=120_000_000, transaction_type="専任媒介", terrain="ひな壇")
         rows = dict(specification_rows(self.site, self.result, info))
-        self.assertEqual(rows["価格"], "1億2,000万円")
+        self.assertEqual(rows["価格"], "1億2,000万円")  # 明示指定なら名目は「価格」
         self.assertEqual(rows["取引態様"], "専任媒介")
         self.assertEqual(rows["地勢"], "ひな壇")
 

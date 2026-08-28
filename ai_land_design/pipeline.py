@@ -40,6 +40,7 @@ from .application import ApplicationInfo
 from .listing import ListingInfo
 from .bim import to_ifc
 from .compliance import ComplianceReport
+from .cost import SpecDevelopment
 from .pdfkit import FontError
 from .structure import TABLE_LEGACY, WallQuantityReport, confirm_table
 from .models import (
@@ -68,8 +69,11 @@ class Options:
     project_name: str = "AI LAND DESIGN"
     ceiling_height_m: float = 2.4
     roof_weight: str = "軽い"  # 壁量計算に使う屋根の重さ（軽い / 重い）
-    unit_cost_per_tsubo: Optional[int] = None  # 本体工事原価の坪単価（実績値）
+    unit_cost_per_tsubo: Optional[int] = None  # 工事原価の坪単価（実績値）
     gross_margin: Optional[float] = None  # 粗利率（粗利 ÷ 請負金額）
+    business_model: str = "注文住宅"  # 注文住宅 / 分譲住宅
+    sale_price_jpy: Optional[int] = None  # 分譲の販売価格（未指定なら目標利益率から逆算）
+    spec_target_margin: Optional[float] = None  # 分譲の目標事業利益率
     seismic_table_verified: bool = False  # 係数表が現行の告示値だと確認済みか
     application: ApplicationInfo = field(default_factory=ApplicationInfo)
     listing: ListingInfo = field(default_factory=ListingInfo)  # 販売図面の記載事項
@@ -88,6 +92,9 @@ class Options:
             "roof_weight": self.roof_weight,
             "unit_cost_per_tsubo": self.unit_cost_per_tsubo,
             "gross_margin": self.gross_margin,
+            "business_model": self.business_model,
+            "sale_price_jpy": self.sale_price_jpy,
+            "spec_target_margin": self.spec_target_margin,
             "seismic_table_verified": self.seismic_table_verified,
             "application": self.application.to_dict(),
             "listing": self.listing.to_dict(),
@@ -107,6 +114,7 @@ class ProjectResult:
     compliance: List[Finding] = field(default_factory=list)
     code_check: Optional[ComplianceReport] = None
     wall_quantity: Optional[WallQuantityReport] = None
+    development: Optional[SpecDevelopment] = None  # 分譲事業の収支（分譲のときだけ）
 
     @property
     def blocked(self) -> bool:
@@ -123,6 +131,7 @@ class ProjectResult:
             "compliance": [f.to_dict() for f in self.compliance],
             "code_check": self.code_check.to_dict() if self.code_check else None,
             "wall_quantity": self.wall_quantity.to_dict() if self.wall_quantity else None,
+            "development": self.development.to_dict() if self.development else None,
         }
         if self.building and self.cost:
             data["summary"] = {
@@ -188,6 +197,20 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         land_price_jpy=options.land_price_jpy,
         unit_cost_per_tsubo=options.unit_cost_per_tsubo,
     )
+    # 分譲（建売）の場合は事業者側の収支も出す
+    development = None
+    if options.business_model == "分譲住宅":
+        development = cost_module.spec_development(
+            breakdown,
+            sale_price_jpy=options.sale_price_jpy,
+            target_margin=(
+                options.spec_target_margin
+                if options.spec_target_margin is not None
+                else cost_module.SPEC_TARGET_MARGIN
+            ),
+            tax_rate=rates.consumption_tax,
+        )
+
     compliance = documents_module.compliance_check(envelope, building)
 
     # 壁量計算（木造のみ）
@@ -209,6 +232,7 @@ def run(site: Site, options: Optional[Options] = None) -> ProjectResult:
         compliance=compliance,
         code_check=code_check,
         wall_quantity=wall_quantity,
+        development=development,
     )
 
 
@@ -334,6 +358,25 @@ def to_markdown(result: ProjectResult) -> str:
     lines += [
         f"| **総事業費** | **{breakdown.project_total_jpy:,} 円** | |",
         "",
+    ]
+    if result.development:
+        plan = result.development
+        lines += [
+            "### 分譲事業の収支",
+            "",
+            "| 項目 | 金額 |",
+            "| --- | ---: |",
+            f"| 土地仕入 | {plan.land_cost_jpy:,} 円 |",
+            f"| 土地仕入諸費用 | {plan.acquisition_cost_jpy:,} 円 |",
+            f"| 工事原価（税込） | {plan.construction_cost_jpy:,} 円 |",
+            f"| 設計・申請・調査（税込） | {plan.design_cost_jpy:,} 円 |",
+            f"| 販売管理費 | {plan.sga_jpy:,} 円 |",
+            f"| **原価計** | **{plan.total_cost_jpy:,} 円** |",
+            f"| **販売価格** | **{plan.sale_price_jpy:,} 円** |",
+            f"| **事業利益** | **{plan.profit_jpy:,} 円**（利益率 {plan.profit_rate:.1%}） |",
+            "",
+        ]
+    lines += [
         "## 6. 適合チェック",
         "",
     ]

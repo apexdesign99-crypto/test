@@ -122,10 +122,19 @@
         <label><input type="checkbox" name="seismic_table_verified"> 必要壁量の係数表が現行の告示値であることを確認した</label>
       </div>
       <div class="grid-2">
-        <label class="field"><span>本体工事原価 (円/坪)</span><input type="number" name="unit_cost_per_tsubo" placeholder="457000" step="any" min="0"></label>
+        <label class="field"><span>事業形態</span>
+          <select name="business_model">
+            <option value="注文住宅">注文住宅（請負）</option>
+            <option value="分譲住宅">分譲住宅（建売）</option>
+          </select>
+        </label>
+        <label class="field"><span>販売価格 (円)<small>／分譲</small></span><input type="number" name="sale_price_jpy" placeholder="目標利益率から逆算" step="any" min="0"></label>
+      </div>
+      <div class="grid-2">
+        <label class="field"><span>工事原価 (円/坪)</span><input type="number" name="unit_cost_per_tsubo" placeholder="457000" step="any" min="0"></label>
         <label class="field"><span>粗利率 (%)</span><input type="number" name="gross_margin" placeholder="25" step="any" min="0" max="90"></label>
       </div>
-      <p class="hint">原価坪単価は実績値。未入力なら構造別の既定値（木造 457,000円/坪）を使います。</p>
+      <p class="hint">工事原価の坪単価は付帯工事・現場経費を含む実績値。既定は木造 457,000円/坪（35坪1,600万円）、粗利率20%で請負2,000万円になります。</p>
       <div class="grid-2">
         <label class="field"><span>目標延床 (m²)</span><input type="number" name="target_floor_area_m2" placeholder="自動" step="any" min="20"></label>
         <label class="field">

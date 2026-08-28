@@ -2,13 +2,22 @@
 
 坪単価ベースの積み上げ方式で、**工事原価と粗利を分けて**計算する。
 
-  工事原価 = 本体工事原価 + 付帯工事原価 + 現場経費
+  工事原価 = 工事原価坪単価 × 延床坪数（付帯工事・現場経費を含む）
   請負金額 = 工事原価 ÷ (1 − 粗利率)
   建築費   = 請負金額 + 設計監理費 + 申請・調査費 (+ 消費税)
   総事業費 = 土地代 + 建築費 + 諸費用（仲介・登記・税・保険・ローン・予備費）
 
-原価単価（`UNIT_COST_PER_TSUBO`）と料率（`Rates`）は事業者ごとの実績値に
-差し替えて使う。木造の既定値は実績（35坪・1,600万円）に基づく 457,000 円/坪。
+事業形態は 2 つを扱う。
+
+  注文住宅  建築主が請負金額を支払う。総事業費＝土地＋建築費＋諸費用
+  分譲住宅  事業者が土地を仕入れて建てて売る。`spec_development()` で
+            販売価格・原価・販管費・事業利益を算出する
+
+単価と料率は事業者ごとの実績値に差し替えて使う。既定値は実績に基づく。
+
+  工事原価  35坪 1,600万円 → 457,000 円/坪（付帯・現場経費込み）
+  粗利率    (2,000万 − 1,600万) ÷ 2,000万 = 20%
+  請負      35坪 2,000万円 → 571,000 円/坪
 """
 
 from __future__ import annotations
@@ -20,8 +29,8 @@ from .models import Building, CostBreakdown, CostItem, Site, Structure
 
 TSUBO_M2 = 3.305785
 
-#: 構造別の本体工事**原価** 坪単価 [円/坪]（標準グレード）
-#: 木造は実績値（延床35坪・本体工事原価1,600万円 → 457,000円/坪）を既定とする。
+#: 構造別の**工事原価** 坪単価 [円/坪]（標準グレード・付帯工事と現場経費を含む）
+#: 木造は実績値（延床35坪・工事原価1,600万円 → 457,000円/坪）を既定とする。
 UNIT_COST_PER_TSUBO: Dict[Structure, int] = {
     Structure.WOOD: 457_000,
     Structure.STEEL: 580_000,
@@ -43,9 +52,11 @@ GRADE_FACTOR: Dict[str, float] = {
 class Rates:
     """料率・固定費の設定。"""
 
-    incidental: float = 0.15  # 付帯工事（外構・給排水引込・地盤改良）の原価
-    site_overhead: float = 0.05  # 現場経費（仮設・運搬・現場管理）
-    gross_margin: float = 0.25  # 粗利率（粗利 ÷ 請負金額）
+    #: 付帯工事（外構・給排水引込・地盤改良）を別建てにする場合の率。
+    #: 既定 0 は「工事原価の坪単価に含む」という意味。
+    incidental: float = 0.0
+    site_overhead: float = 0.0  # 現場経費（仮設・運搬・現場管理）を別建てにする場合の率
+    gross_margin: float = 0.20  # 粗利率（粗利 ÷ 請負金額）＝実績 (2000-1600)/2000
     design: float = 0.08  # 設計監理費（請負金額に対する率）
     application_fee_jpy: int = 350_000  # 確認申請・中間/完了検査・省エネ適合
     survey_fee_jpy: int = 250_000  # 地盤調査・測量
@@ -76,18 +87,18 @@ def cost_items(
     base = unit_cost_per_tsubo or UNIT_COST_PER_TSUBO[structure]
     unit = int(round(base * GRADE_FACTOR.get(grade, 1.0)))
     main = int(round(tsubo * unit))
-    items = [
-        CostItem(
-            "本体工事原価",
-            main,
-            f"{structure.value}・{grade} {unit:,}円/坪 × {tsubo:.1f}坪",
-        ),
-        CostItem(
-            "付帯工事原価",
-            int(round(main * rates.incidental)),
-            f"外構・給排水引込・地盤改良（本体の{rates.incidental:.0%}）",
-        ),
-    ]
+    note = f"{structure.value}・{grade} {unit:,}円/坪 × {tsubo:.1f}坪"
+    if not rates.incidental and not rates.site_overhead:
+        note += "（付帯工事・現場経費を含む）"
+    items = [CostItem("工事原価", main, note)]
+    if rates.incidental:
+        items.append(
+            CostItem(
+                "付帯工事原価",
+                int(round(main * rates.incidental)),
+                f"外構・給排水引込・地盤改良（本体の{rates.incidental:.0%}）",
+            )
+        )
     if rates.site_overhead:
         items.append(
             CostItem(
@@ -196,6 +207,95 @@ def estimate(
         other_items=other_items(land, construction_total, rates),
         land_price_jpy=land,
         tax_rate=rates.consumption_tax,
+    )
+
+
+#: 分譲事業の既定値
+SPEC_TARGET_MARGIN = 0.18  # 目標事業利益率（利益 ÷ 販売価格）
+SPEC_SGA_RATE = 0.07  # 販売管理費（広告・販売手数料・金利など）÷ 販売価格
+SPEC_ACQUISITION_RATE = 0.06  # 土地仕入諸費用（仲介・登記・取得税）÷ 土地価格
+
+
+@dataclass
+class SpecDevelopment:
+    """分譲（建売）事業の収支。
+
+    事業者が土地を仕入れ、建てて、土地建物一体で売る場合の採算を見る。
+    """
+
+    land_cost_jpy: int  # 土地仕入価格
+    acquisition_cost_jpy: int  # 土地仕入諸費用
+    construction_cost_jpy: int  # 工事原価
+    design_cost_jpy: int  # 設計・申請・調査
+    sga_jpy: int  # 販売管理費
+    sale_price_jpy: int  # 販売価格（税込）
+    target_margin: float
+
+    @property
+    def total_cost_jpy(self) -> int:
+        return (
+            self.land_cost_jpy
+            + self.acquisition_cost_jpy
+            + self.construction_cost_jpy
+            + self.design_cost_jpy
+            + self.sga_jpy
+        )
+
+    @property
+    def profit_jpy(self) -> int:
+        return self.sale_price_jpy - self.total_cost_jpy
+
+    @property
+    def profit_rate(self) -> float:
+        return self.profit_jpy / self.sale_price_jpy if self.sale_price_jpy else 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "land_cost_jpy": self.land_cost_jpy,
+            "acquisition_cost_jpy": self.acquisition_cost_jpy,
+            "construction_cost_jpy": self.construction_cost_jpy,
+            "design_cost_jpy": self.design_cost_jpy,
+            "sga_jpy": self.sga_jpy,
+            "total_cost_jpy": self.total_cost_jpy,
+            "sale_price_jpy": self.sale_price_jpy,
+            "profit_jpy": self.profit_jpy,
+            "profit_rate": round(self.profit_rate, 4),
+            "target_margin": self.target_margin,
+        }
+
+
+def spec_development(
+    breakdown: CostBreakdown,
+    sale_price_jpy: Optional[int] = None,
+    target_margin: float = SPEC_TARGET_MARGIN,
+    sga_rate: float = SPEC_SGA_RATE,
+    acquisition_rate: float = SPEC_ACQUISITION_RATE,
+    tax_rate: float = 0.10,
+) -> SpecDevelopment:
+    """分譲事業の収支を算出する。
+
+    販売価格を指定しない場合は、目標利益率から逆算する。
+    建物には消費税がかかるため、工事原価・設計費に税を乗せて原価とする。
+    """
+    land = breakdown.land_price_jpy
+    acquisition = int(round(land * acquisition_rate))
+    construction = int(round(breakdown.cost_subtotal_jpy * (1 + tax_rate)))
+    design = int(round(breakdown.soft_subtotal_jpy * (1 + tax_rate)))
+
+    fixed_cost = land + acquisition + construction + design
+    if sale_price_jpy is None:
+        divisor = max(0.05, 1 - target_margin - sga_rate)
+        sale_price_jpy = int(round(fixed_cost / divisor))
+    sga = int(round(sale_price_jpy * sga_rate))
+
+    return SpecDevelopment(
+        land_cost_jpy=land,
+        acquisition_cost_jpy=acquisition,
+        construction_cost_jpy=construction,
+        design_cost_jpy=design,
+        sga_jpy=sga,
+        sale_price_jpy=sale_price_jpy,
+        target_margin=target_margin,
     )
 
 

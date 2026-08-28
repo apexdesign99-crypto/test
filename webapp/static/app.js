@@ -235,6 +235,8 @@ function collectPayload() {
       floor_height_m: Number(form.floor_height_m.value) || 2.9,
       ceiling_height_m: Number(form.ceiling_height_m.value) || 2.4,
       roof_weight: form.roof_weight.value,
+      business_model: form.business_model.value,
+      sale_price_jpy: numberOrNull(form.sale_price_jpy.value),
       unit_cost_per_tsubo: numberOrNull(form.unit_cost_per_tsubo.value),
       gross_margin: form.gross_margin.value === "" ? null : Number(form.gross_margin.value) / 100,
       seismic_table_verified: form.seismic_table_verified.checked,
@@ -765,7 +767,41 @@ function renderCost(data) {
         </tbody>
       </table>
     </div>
+    ${renderDevelopment(data)}
     ${findingsList(data.compliance)}`;
+}
+
+/** 分譲（建売）事業の収支。 */
+function renderDevelopment(data) {
+  const plan = data.development;
+  if (!plan) return "";
+  const rows = [
+    ["土地仕入", plan.land_cost_jpy],
+    ["土地仕入諸費用", plan.acquisition_cost_jpy],
+    ["工事原価（税込）", plan.construction_cost_jpy],
+    ["設計・申請・調査（税込）", plan.design_cost_jpy],
+    ["販売管理費", plan.sga_jpy],
+  ];
+  return `
+    <h2 class="card-title" style="margin-top:20px">分譲事業の収支</h2>
+    <div class="metrics">
+      ${metric("販売価格", fmtJpy(plan.sale_price_jpy))}
+      ${metric("原価計", fmtJpy(plan.total_cost_jpy))}
+      ${metric("事業利益", fmtJpy(plan.profit_jpy), `利益率 ${(plan.profit_rate * 100).toFixed(1)}%`)}
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>項目</th><th class="num">金額</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(([label, value]) => `<tr><td>${label}</td><td class="num">${value.toLocaleString("ja-JP")} 円</td></tr>`)
+            .join("")}
+          <tr class="total"><td>原価計</td><td class="num">${plan.total_cost_jpy.toLocaleString("ja-JP")} 円</td></tr>
+          <tr class="total"><td>販売価格</td><td class="num">${plan.sale_price_jpy.toLocaleString("ja-JP")} 円</td></tr>
+          <tr class="total"><td>事業利益</td><td class="num">${plan.profit_jpy.toLocaleString("ja-JP")} 円</td></tr>
+        </tbody>
+      </table>
+    </div>`;
 }
 
 function renderExports(data) {
