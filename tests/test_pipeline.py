@@ -90,6 +90,25 @@ class PipelineTest(unittest.TestCase):
             for path in written:
                 self.assertGreater(path.stat().st_size, 0)
 
+    def test_generated_plans_pass_the_code_check_at_any_size(self):
+        """延床の目標を変えても、生成した案が法適合チェックで不適合にならないこと。"""
+        for site in LocalGisProvider(SAMPLES / "sites.json").all_sites():
+            for target in (None, 90.0, 115.7, 130.0):
+                result = pipeline.run(site, pipeline.Options(target_floor_area_m2=target))
+                if result.blocked:
+                    continue
+                blocks = [f.message for f in result.compliance if f.level == "block"]
+                self.assertEqual(blocks, [], f"目標延床{target}: {blocks}")
+
+    def test_default_rates_reproduce_the_actual_figures(self):
+        """35坪で工事原価1,600万円・請負2,000万円（事業者の実績値）になること。"""
+        result = pipeline.run(make_site(), pipeline.Options(target_floor_area_m2=115.70))
+        tsubo = result.building.total_floor_area_m2 / 3.305785
+        self.assertAlmostEqual(tsubo, 35.0, delta=0.5)
+        self.assertAlmostEqual(result.cost.cost_subtotal_jpy, 16_000_000, delta=200_000)
+        self.assertAlmostEqual(result.cost.contract_jpy, 20_000_000, delta=250_000)
+        self.assertAlmostEqual(result.cost.margin_rate, 0.20, places=6)
+
     def test_all_sample_sites_run(self):
         for site in LocalGisProvider(SAMPLES / "sites.json").all_sites():
             result = pipeline.run(site)

@@ -116,6 +116,46 @@ class LayoutTest(unittest.TestCase):
                 windows = [o for o in floor.openings if o.room == room.name]
                 self.assertTrue(windows, f"{floor.storey}階 {room.name} に窓がない")
 
+    def test_habitable_rooms_meet_the_daylight_requirement(self):
+        """居室の窓は床面積の 1/7 を満たす（採光の法規判定が通る大きさで生成する）。"""
+        for target in (None, 90.0, 115.7, 130.0):
+            building = layout.generate(
+                self.site, self.envelope, household_size=4, target_floor_area_m2=target
+            )
+            self.assert_daylight(building, target)
+
+    def assert_daylight(self, building, target=None):
+        for floor in building.floors:
+            for room in floor.rooms:
+                if not room.is_habitable:
+                    continue
+                area = sum(o.area_m2 for o in floor.openings if o.room == room.name)
+                self.assertGreaterEqual(
+                    area,
+                    room.area_m2 / 7.0,
+                    f"目標延床{target}: {floor.storey}階 {room.name} の採光が不足",
+                )
+
+    def test_openings_sit_on_the_grid_and_leave_a_wall_cell(self):
+        """開口部はグリッド線上に置き、同じ面に 910mm 以上の壁を残す。"""
+        from ai_land_design.geometry import bbox
+
+        for floor in self.building.floors:
+            x0, y0, _, _ = bbox(floor.footprint)
+            for opening in floor.openings:
+                origin = x0 if opening.facade.value in ("南", "北") else y0
+                cells = (opening.position - origin) / layout.GRID_M
+                self.assertAlmostEqual(cells, round(cells), places=6)
+                width_cells = opening.width / layout.GRID_M
+                self.assertAlmostEqual(width_cells, round(width_cells), places=6)
+                room = next(r for r in floor.rooms if r.name == opening.room)
+                _, span = layout._facade_span(room, opening.facade)
+                self.assertLessEqual(
+                    opening.width,
+                    span - layout.GRID_M + 1e-6,
+                    f"{floor.storey}階 {opening.room} の {opening.facade.value}面に壁が残らない",
+                )
+
     def test_openings_stay_within_the_facade(self):
         from ai_land_design.geometry import bbox
 

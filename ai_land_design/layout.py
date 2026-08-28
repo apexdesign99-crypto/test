@@ -304,35 +304,42 @@ def footprint_cells(
     """建物外形をグリッドのセル数で決める。
 
     戻り値は (nx, ny, 原点x, 原点y)。原点は敷地外接矩形と後退距離から求める。
+
+    セル数は「法規上の上限（建蔽率・敷地）を超えない範囲で、目標建築面積に
+    最も近い組み合わせ」を選ぶ。常に切り捨てると目標面積を1割近く下回るため。
     """
     min_x, min_y, max_x, max_y = bbox(site.polygon)
     setback = max(site.zoning.wall_setback_m, 0.5)
     avail_w = max(GRID_M * 3, (max_x - min_x) - setback * 2)
     avail_h = max(GRID_M * 3, (max_y - min_y) - setback * 2)
 
-    limit = min(envelope.max_building_area_m2, target_building_area_m2, avail_w * avail_h)
-    target_cells = max(4.0, limit / CELL_AREA_M2)
+    # 超えてはいけない上限（法規と敷地）と、近づけたい目標を分けて扱う
+    hard_limit = min(envelope.max_building_area_m2, avail_w * avail_h)
+    target = min(target_building_area_m2, hard_limit)
 
-    ratio = avail_w / avail_h
-    ny = max(2, int(round(math.sqrt(target_cells / ratio))))
-    nx = max(2, int(round(target_cells / ny)))
+    max_nx = max(2, int(avail_w // GRID_M))
+    max_ny = max(2, int(avail_h // GRID_M))
 
-    # 敷地・法規・縦横比の制約に収める
-    nx = min(nx, int(avail_w // GRID_M))
-    ny = min(ny, int(avail_h // GRID_M))
-    nx, ny = max(2, nx), max(2, ny)
-    if nx / ny > aspect_cap:
-        nx = max(2, int(ny * aspect_cap))
-    elif ny / nx > aspect_cap:
-        ny = max(2, int(nx * aspect_cap))
-    while nx * ny * CELL_AREA_M2 > limit + 1e-9 and (nx > 2 or ny > 2):
-        if nx >= ny and nx > 2:
-            nx -= 1
-        elif ny > 2:
-            ny -= 1
-        else:
-            break
+    # 目標との差 → 敷地の縦横比との差 の順で最良の組み合わせを選ぶ
+    site_ratio = avail_w / avail_h
+    best_score: Optional[Tuple[float, float]] = None
+    best_cells: Optional[Tuple[int, int]] = None
+    for cx in range(2, max_nx + 1):
+        for cy in range(2, max_ny + 1):
+            ratio = cx / cy
+            if ratio > aspect_cap or 1 / ratio > aspect_cap:
+                continue
+            if cx * cy * CELL_AREA_M2 > hard_limit + 1e-9:
+                continue
+            score = (abs(cx * cy * CELL_AREA_M2 - target), abs(ratio - site_ratio))
+            if best_score is None or score < best_score:
+                best_score, best_cells = score, (cx, cy)
 
+    if best_cells is None:  # 縦横比の制約で候補が無い場合は素直に切り捨てる
+        ny = max(2, min(max_ny, int(round(math.sqrt(target / CELL_AREA_M2 / site_ratio)))))
+        best_cells = (max(2, min(max_nx, int(target / CELL_AREA_M2 / ny))), ny)
+
+    nx, ny = best_cells
     width, height = nx * GRID_M, ny * GRID_M
     x0 = min_x + setback + max(0.0, (avail_w - width) / 2)
     y0 = min_y + setback + max(0.0, (avail_h - height) / 2)
@@ -449,9 +456,28 @@ def _facade_span(room: Room, facade: Direction) -> Tuple[float, float]:
 
 #: 採光に有利な方位の優先順
 _FACADE_PRIORITY = {Direction.S: 0, Direction.E: 1, Direction.W: 2, Direction.N: 3}
-#: 1 室が面する外壁のうち、開口部に使える割合の上限
-#: （耐力壁を残すための構造上の目安。採光に必要な幅がこれを超える場合は採光を優先する）
-MAX_OPENING_RATIO = 0.5
+def _grid_opening(
+    span_start: float, span_length: float, origin: float, wanted_width: float
+) -> Tuple[float, float]:
+    """開口部の位置と幅をグリッドに合わせる。
+
+    壁が 910mm 未満の細切れになると耐力壁として数えられないため、開口部は
+    グリッド線上に置き、残る壁が必ずグリッドの整数倍になるようにする。
+    戻り値は (開始位置, 幅)。
+    """
+    cells = max(1, int(round(span_length / GRID_M)))
+    start_cell = round((span_start - origin) / GRID_M)
+    wanted_cells = max(1, int(math.ceil(wanted_width / GRID_M - 1e-9)))
+    # 最低 1 マスは壁を残す（両隣の室の壁と繋がるため実質はもっと長くなる）
+    width_cells = min(wanted_cells, max(1, cells - 1))
+    offset = (cells - width_cells) // 2
+    return origin + (start_cell + offset) * GRID_M, width_cells * GRID_M
+
+
+#: 掃出窓の高さ [m]（腰高 0）
+SLIDING_H = 2.0
+#: 腰窓の高さ [m] と腰高 [m]
+CASEMENT_H, CASEMENT_SILL = 1.2, 0.8
 
 
 def place_openings(
@@ -461,10 +487,17 @@ def place_openings(
 ) -> List[Opening]:
     """各室の外壁面に窓・玄関ドアを配置する。
 
-    居室には採光に必要な面積（床面積の 1/7）に 2 割の余裕を見た窓を、
-    水回りには換気用の小窓を、玄関には道路側の玄関ドアを置く。
+    居室には採光に必要な面積（床面積の 1/7）を満たす窓を、水回りには換気用の
+    小窓を、玄関には道路側の玄関ドアを置く。位置と幅はグリッドに合わせるため、
+    残った壁は 910mm の整数倍になり、そのまま耐力壁として数えられる。
+
+    居室の窓は 1 面で足りなければ次の外壁面へ回し、それでも足りないときは
+    腰窓を掃出窓（高さ 2.0m）に上げて必要面積を満たす。どの面でも最低 1 マス
+    （910mm）の壁を残すため、四分割法の壁量はグリッド単位で確保される。
     """
+    x0, y0, _, _ = bbox(floor.footprint)
     openings: List[Opening] = []
+
     for room in floor.rooms:
         facades = _facades_of(room, floor.footprint)
         if not facades:
@@ -472,50 +505,60 @@ def place_openings(
         facades.sort(key=lambda f: _FACADE_PRIORITY[f])
         facade = facades[0]
         start, length = _facade_span(room, facade)
-        usable = max(0.0, length - 0.6)  # 両端に壁を残す
-        if usable < 0.6:
+        origin = x0 if facade in (Direction.S, Direction.N) else y0
+        if length < GRID_M * 2:  # 1 マス分の壁も残せない狭い面には開口を設けない
             continue
 
         if room.name == entrance_room and entrance_facade in facades:
             start, length = _facade_span(room, entrance_facade)
-            width = min(1.2, max(0.9, length - 0.9))
+            origin = x0 if entrance_facade in (Direction.S, Direction.N) else y0
+            position, width = _grid_opening(start, length, origin, 0.91)
             openings.append(
                 Opening("玄関ドア", room.name, floor.storey, entrance_facade,
-                        start + (length - width) / 2, width, 2.0, 0.0)
+                        position, width, 2.0, 0.0)
             )
             continue
 
         if room.is_habitable:
+            # 採光に必要な面積（令 20 条の採光補正を見込まず、余裕 1.2 倍で見る）
             required = room.area_m2 / 7.0 * 1.2
-            height = 2.0 if (room.name == "LDK" and facade is Direction.S) else 1.2
-            kind = "掃出窓" if height >= 2.0 else "窓"
-            # 耐力壁を残すため開口は壁長の半分までを目安とし、
-            # 採光に必要な幅がそれを超える場合だけ上限を緩める
-            structural_cap = length * MAX_OPENING_RATIO
-            daylight_width = required / height
-            width = min(usable, max(1.2, min(daylight_width, max(structural_cap, daylight_width * 0.85))))
-            openings.append(
-                Opening(kind, room.name, floor.storey, facade,
-                        start + (length - width) / 2, width, height,
-                        0.0 if height >= 2.0 else 0.8)
-            )
-            # 1面で足りない場合は2面目に補助窓を設ける
-            if width * height < required - 1e-6 and len(facades) > 1:
-                second = facades[1]
-                s2, l2 = _facade_span(room, second)
-                w2 = min(max(0.0, l2 - 0.6), max(0.9, (required - width * height) / 1.2))
-                if w2 >= 0.6:
-                    openings.append(
-                        Opening("窓", room.name, floor.storey, second,
-                                s2 + (l2 - w2) / 2, w2, 1.2, 0.8)
-                    )
-        elif room.name in ("浴室", "洗面脱衣室", "トイレ", "階段", "ホール"):
-            width = min(usable, 0.9 if room.name != "階段" else 0.6)
-            if width >= 0.6:
-                openings.append(
-                    Opening("窓", room.name, floor.storey, facade,
-                            start + (length - width) / 2, width, 0.9, 1.2)
+            placed: List[Opening] = []
+            for side in facades:
+                if sum(o.width * o.height for o in placed) >= required - 1e-9:
+                    break
+                span_start, span_length = _facade_span(room, side)
+                if span_length < GRID_M * 2:
+                    continue
+                side_origin = x0 if side in (Direction.S, Direction.N) else y0
+                sliding = side is Direction.S
+                height = SLIDING_H if sliding else CASEMENT_H
+                deficit = required - sum(o.width * o.height for o in placed)
+                position, width = _grid_opening(
+                    span_start, span_length, side_origin, deficit / height
                 )
+                placed.append(
+                    Opening(
+                        "掃出窓" if sliding else "窓",
+                        room.name, floor.storey, side, position, width, height,
+                        0.0 if sliding else CASEMENT_SILL,
+                    )
+                )
+            # どの面でも幅が足りない場合は、腰窓を掃出窓に上げて高さで稼ぐ
+            for index, opening in enumerate(placed):
+                if sum(o.width * o.height for o in placed) >= required - 1e-9:
+                    break
+                if opening.height >= SLIDING_H:
+                    continue
+                placed[index] = Opening(
+                    "掃出窓", opening.room, opening.storey, opening.facade,
+                    opening.position, opening.width, SLIDING_H, 0.0,
+                )
+            openings.extend(placed)
+        elif room.name in ("浴室", "洗面脱衣室", "トイレ", "階段", "ホール", "家事室"):
+            position, width = _grid_opening(start, length, origin, GRID_M)
+            openings.append(
+                Opening("窓", room.name, floor.storey, facade, position, width, 0.9, 1.2)
+            )
     return openings
 
 
