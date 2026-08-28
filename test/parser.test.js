@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectTiming, kanjiToNumber, normalize, parseUtterance } from '../js/parser.js';
+import { detectTiming, kanjiToNumber, normalize, parseUtterance } from '../src/parser.js';
 
 const NOW = new Date(2026, 7, 28, 7, 30); // 2026-08-28 07:30
 

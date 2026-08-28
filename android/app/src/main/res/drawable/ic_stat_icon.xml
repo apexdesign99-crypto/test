@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知バー用のモノクロアイコン（ハート＋脈波） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,20.5c-0.4,0 -0.7,-0.1 -1,-0.4l-4.6,-4.7c-1.5,-1.6 -1.5,-4.1 0,-5.7c1.4,-1.5 3.8,-1.5 5.2,0l0.4,0.4l0.4,-0.4c1.4,-1.5 3.8,-1.5 5.2,0c1.5,1.6 1.5,4.1 0,5.7L13,20.1C12.7,20.4 12.4,20.5 12,20.5z" />
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M6.5,13.5h2.2l1,-2l1.6,4l1.2,-2.5l0.8,1.2h2.6" />
+</vector>

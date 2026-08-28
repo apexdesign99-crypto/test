@@ -1,0 +1,18 @@
+{
+  "appId": "app.bpvoice.tally",
+  "appName": "血圧ボイス記録",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#f4f6fb"
+  },
+  "ios": {
+    "backgroundColor": "#f4f6fb",
+    "contentInset": "always"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_icon",
+      "iconColor": "#1d4ed8"
+    }
+  }
+}

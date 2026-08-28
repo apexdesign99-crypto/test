@@ -1,0 +1,21 @@
+node_modules/
+www/js/app.js
+www/js/app.js.map
+
+# ネイティブビルドの生成物
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+ios/App/Pods/
+ios/App/build/
+ios/App/Podfile.lock
+ios/App/App.xcworkspace/xcuserdata/
+ios/App/App.xcodeproj/xcuserdata/
+.DS_Store
+
+# cap sync が www/ からコピーする生成物
+android/app/src/main/assets/public/
+ios/App/App/public/
+www/__native-preview.html

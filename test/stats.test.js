@@ -9,7 +9,7 @@ import {
   summarizeDaily,
   summarizeMonthly,
   withinDays,
-} from '../js/stats.js';
+} from '../src/stats.js';
 
 const NOW = new Date(2026, 7, 28, 20, 0);
 const at = (day, hour) => new Date(2026, 7, day, hour, 0).toISOString();
