@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>血圧ボイス記録</title>
+    <meta name="description" content="毎日の血圧を音声で記録して自動集計するアプリ" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon.svg" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <h1>血圧ボイス記録</h1>
+      <p class="tagline">話すだけで記録、集計は自動。</p>
+    </header>
+
+    <main>
+      <section class="card mic-card">
+        <div id="today-banner" class="banner" hidden></div>
+        <button id="mic" class="mic" type="button" aria-live="polite">
+          <span class="mic-icon" aria-hidden="true"></span>
+          <span id="mic-label" class="mic-label">タップして話す</span>
+        </button>
+        <p id="transcript" class="transcript">例：「朝の血圧、上が132、下が84、脈は68」</p>
+        <p id="mic-error" class="error" hidden></p>
+        <label class="toggle">
+          <input type="checkbox" id="auto-save" />
+          <span>聞き取れたら自動で保存する</span>
+        </label>
+        <button id="manual-toggle" class="link-button" type="button">手入力で記録する</button>
+      </section>
+
+      <section id="confirm" class="card confirm" hidden>
+        <h2>この内容で記録しますか？</h2>
+        <div class="fields">
+          <label>最高<input type="number" id="f-sys" inputmode="numeric" /></label>
+          <label>最低<input type="number" id="f-dia" inputmode="numeric" /></label>
+          <label>脈拍<input type="number" id="f-pulse" inputmode="numeric" /></label>
+          <label>時間帯
+            <select id="f-timing">
+              <option value="morning">朝</option>
+              <option value="evening">晩</option>
+            </select>
+          </label>
+          <label class="wide">日時<input type="datetime-local" id="f-at" /></label>
+          <label class="wide">メモ<input type="text" id="f-note" placeholder="服薬後・運動後など" /></label>
+        </div>
+        <p id="confirm-class" class="chip"></p>
+        <div class="actions">
+          <button id="save" class="primary" type="button">保存する<span id="countdown"></span></button>
+          <button id="cancel" class="ghost" type="button">やめる</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>集計</h2>
+        <div id="summary" class="summary"></div>
+        <div class="chart-head">
+          <h3>推移（日別平均と7日移動平均）</h3>
+          <select id="range">
+            <option value="14">2週間</option>
+            <option value="30" selected>1か月</option>
+            <option value="90">3か月</option>
+            <option value="0">全期間</option>
+          </select>
+        </div>
+        <div id="chart" class="chart"></div>
+      </section>
+
+      <section class="card">
+        <div class="chart-head">
+          <h2>記録</h2>
+          <div class="tabs">
+            <button class="tab is-active" data-view="daily" type="button">日別</button>
+            <button class="tab" data-view="monthly" type="button">月別</button>
+            <button class="tab" data-view="list" type="button">一覧</button>
+          </div>
+        </div>
+        <div id="table"></div>
+      </section>
+
+      <section class="card">
+        <h2>データ</h2>
+        <div class="actions">
+          <button id="export" class="ghost" type="button">CSVで書き出す</button>
+          <label class="ghost file-button">CSVを取り込む<input type="file" id="import" accept=".csv,text/csv" hidden /></label>
+          <button id="clear" class="ghost danger" type="button">すべて削除</button>
+        </div>
+        <p class="note">
+          データはこの端末のブラウザ内（localStorage）だけに保存されます。サーバーには送信されません。
+          区分は日本高血圧学会 JSH2019 の家庭血圧基準に基づく目安で、診断ではありません。
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

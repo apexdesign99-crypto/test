@@ -1,0 +1,11 @@
+{
+  "name": "bp-voice-tally",
+  "version": "1.0.0",
+  "description": "毎日の血圧を音声で記録して自動集計するブラウザアプリ",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "python3 -m http.server 8080"
+  }
+}
