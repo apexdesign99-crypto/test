@@ -184,6 +184,7 @@ def test_未設定なら止まる業務が列挙される():
     assert checks["概算の算定"]["ok"] is False
     assert checks["請求計画"]["ok"] is False
     assert checks["税込金額"]["ok"] is False
+    assert checks["Instagram の運用計画"]["ok"] is False
     # 土地診断は既定値があるので設定なしでも動く
     assert checks["土地診断"]["ok"] is True
 
@@ -195,6 +196,7 @@ def test_設定すればOKになる():
         design_fee_rate=10,
         billing_schedule=[{"label": "契約金", "ratio": 100, "stage": "設計契約"}],
         tax_rate=10,
+        instagram_cadence=6,
     )
     assert all(c["ok"] for c in office.readiness())
 

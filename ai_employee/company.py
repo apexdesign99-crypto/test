@@ -120,6 +120,11 @@ class OfficeProfile:
     tax_rate: float | None = None             # 消費税率 (%)。未設定なら税込を出さない
     payment_term_days: int = DEFAULT_PAYMENT_TERM_DAYS  # 入金遅延とみなす日数
 
+    # Instagram の運用方針。
+    instagram_handle: str = ""
+    instagram_cadence: int = 0        # 月の目標投稿数。0 なら未設定
+    instagram_mix: str = "standard"   # 月間の型の配分(instagram_plan.PLAN_MIXES)
+
     # 土地診断で使う係数と閾値。空なら一般的な既定値を使う。
     # いずれも事務所が確認して設定する値で、法令から導いたものではない。
     land_settings: dict[str, Any] = field(default_factory=dict)
@@ -197,6 +202,13 @@ class OfficeProfile:
             self.tax_rate is not None,
             "消費税率(未設定だと税込を算出しない)",
             "office --tax-rate 10",
+        )
+        add(
+            "Instagram の運用計画",
+            "マーケ・集客",
+            self.instagram_cadence > 0,
+            "月の目標投稿数(未設定だと計画の抜けを判定できない)",
+            "office --instagram-cadence 6 --instagram-mix standard",
         )
         add(
             "土地診断",
@@ -353,6 +365,11 @@ class OfficeProfile:
                 f"{e['label']} {e['ratio']}%({e['stage']}到達時)" for e in self.billing_schedule
             )
             lines.append(f"- 出来高払いの配分: {steps}")
+        if self.instagram_cadence:
+            lines.append(
+                f"- Instagram の運用方針: 月 {self.instagram_cadence} 本"
+                + (f"({self.instagram_handle})" if self.instagram_handle else "")
+            )
         if self.tax_rate is not None:
             lines.append(
                 f"- 消費税率: {self.tax_rate}%(事務所の設定値。適用税率は事務所で確認する)"

@@ -14,16 +14,18 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .billing import totals
 from .company import STAGES, OfficeProfile, ProjectLedger
 from .competitor import APPEAL_AXES, CompetitorLedger
+from .instagram_plan import InstagramPlan
 from .workspace import Workspace, roster
 
 NAV = (
     ("/", "ダッシュボード"),
     ("/projects", "案件"),
+    ("/plan", "発信"),
     ("/billing", "請求"),
     ("/competitors", "競合"),
     ("/roster", "社員"),
@@ -118,6 +120,10 @@ class Views:
     @property
     def ledger(self) -> ProjectLedger:
         return ProjectLedger(self.root)
+
+    @property
+    def plan(self) -> InstagramPlan:
+        return InstagramPlan(self.root)
 
     @property
     def competitors(self) -> CompetitorLedger:
@@ -349,6 +355,62 @@ class Views:
             "請求計画のある案件がありません")))
         return "".join(blocks)
 
+    # --------------------------------------------------------------- 発信
+
+    def plan_view(self, year_month: str | None = None) -> str:
+        from .workspace import now as _now
+
+        office = self.office
+        plan = self.plan
+        month = year_month or _now().strftime("%Y-%m")
+        posts = plan.list(month)
+        gaps = plan.gaps(month, office.instagram_cadence or None)
+
+        cards = "".join([
+            card("計画", f"{gaps['planned']} 本",
+                 "alert" if gaps["shortfall"] else "",
+                 f"目標 {gaps['cadence']} 本" if gaps["cadence"] else "目標が未設定"),
+            card("投稿済", f"{gaps['published']} 本", "ok"),
+            card("素材待ち", f"{len(gaps['waiting_assets'])} 本",
+                 "alert" if gaps["waiting_assets"] else "ok"),
+            card("予定日超過", f"{len(gaps['overdue'])} 本",
+                 "alert" if gaps["overdue"] else "ok"),
+        ])
+        blocks = [f'<h1>{esc(month)} の投稿計画</h1>', f'<div class="cards">{cards}</div>']
+        if gaps["shortfall"]:
+            blocks.append(f'<p class="alert">目標に {gaps["shortfall"]} 本足りません。</p>')
+
+        tones = {"投稿済": "ok", "原稿済": "", "素材待ち": "alert", "見送り": "muted"}
+        rows = []
+        for post in posts:
+            flags = []
+            if not post["assets_ready"] and post["status"] != "見送り":
+                flags.append(pill("素材未確認", "alert"))
+            if post["scheduled_date"] < _now().date().isoformat() and post["status"] not in ("投稿済", "見送り"):
+                flags.append(pill("予定日超過", "alert"))
+            title = esc(post["title"]) if post["title"] else '<span class="muted">題材が未定</span>'
+            if post["consent_conditions"]:
+                title += f'<div class="note">掲載条件: {esc(post["consent_conditions"])}</div>'
+            rows.append([
+                esc(post["scheduled_date"]),
+                esc(post["format_label"]),
+                title,
+                pill(post["status"], tones.get(post["status"], "")),
+                " ".join(flags) or "—",
+                (link(f"/projects/{post['project_id']}", "案件")
+                 if post["project_id"] else "—"),
+            ])
+        blocks.append(section(
+            "投稿一覧",
+            table(["予定日", "型", "題材", "状態", "注意", "案件"], rows,
+                  "この月の計画がありません。CLI の plan --draft で骨格を作れます。"),
+            len(posts)))
+
+        handle = f'({esc(office.instagram_handle)})' if office.instagram_handle else ""
+        blocks.append(f'<p class="basis">フォロワー数や保存数は取得していません。'
+                      f'Instagram の管理画面で確認した値を使ってください。{handle}</p>')
+        return "".join(blocks)
+
     # --------------------------------------------------------------- 競合
 
     def competitors_view(self) -> str:
@@ -525,6 +587,10 @@ def make_handler(root: Path) -> type[BaseHTTPRequestHandler]:
                 elif path.startswith("/projects/"):
                     body = views.project(path.rsplit("/", 1)[-1])
                     title, active = "案件", "/projects"
+                elif path == "/plan":
+                    body, title, active = views.plan_view(
+                        parse_qs(urlparse(self.path).query).get("month", [None])[0]
+                    ), "発信", "/plan"
                 elif path == "/billing":
                     body, title, active = views.billing(), "請求", "/billing"
                 elif path == "/competitors":

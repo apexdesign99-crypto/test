@@ -25,6 +25,7 @@ from .company import (
 )
 from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, CompetitorLedger
 from .copycheck import review_copy as _review_copy
+from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .instagram import (
     POST_FORMATS,
     THEMES,
@@ -32,7 +33,7 @@ from .instagram import (
     build_design,
     post_format as _post_format,
 )
-from .land import RELAXATIONS, ZONING_TYPES, LandConditions
+from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError
 from .workspace import Workspace, WorkspaceError, now
 
 # Opus 4.6 以降で使えるサーバ側 Web 検索ツール。
@@ -79,6 +80,7 @@ def build_tools(
     ledger = ledger or ProjectLedger(workspace.root.parent)
     office = OfficeProfile.load(workspace.root.parent)
     competitors = CompetitorLedger(workspace.root.parent)
+    plan = InstagramPlan(workspace.root.parent)
     me = workspace.employee_id
 
     def current_datetime() -> dict[str, Any]:
@@ -305,6 +307,52 @@ def build_tools(
             "1080×1080 でスクリーンショットするか、印刷ダイアログから PDF に出す。"
             "画像そのものはこのツールでは生成できない。",
         }
+
+    def draft_month_plan(year_month: str, mix: str | None = None) -> dict:
+        created = plan.draft_month(
+            year_month, mix or office.instagram_mix, assignee=me, by=me
+        )
+        return {
+            "year_month": year_month,
+            "mix": mix or office.instagram_mix,
+            "created": len(created),
+            "posts": created,
+            "next": "各投稿の題材(title)を決め、必要な素材を確認すること。"
+            "素材が揃うまで原稿済にはできない。",
+        }
+
+    def plan_post(
+        scheduled_date: str,
+        post_format: str,
+        title: str = "",
+        project_id: str = "",
+        note: str = "",
+    ) -> dict:
+        return plan.add(
+            scheduled_date, post_format, title=title, project_id=project_id,
+            note=note, ledger=ledger, by=me,
+        )
+
+    def update_planned_post(
+        post_id: str,
+        status: str | None = None,
+        title: str | None = None,
+        assets_ready: bool | None = None,
+        design_path: str | None = None,
+        scheduled_date: str | None = None,
+        note: str | None = None,
+    ) -> dict:
+        return plan.update(
+            post_id, status=status, title=title, assets_ready=assets_ready,
+            design_path=design_path, scheduled_date=scheduled_date, note=note,
+        )
+
+    def list_planned_posts(year_month: str | None = None, status: str | None = None) -> dict:
+        posts = plan.list(year_month=year_month, status=status)
+        return {"count": len(posts), "posts": posts}
+
+    def plan_gaps(year_month: str) -> dict:
+        return plan.gaps(year_month, office.instagram_cadence or None)
 
     def record_land(
         project_id: str,
@@ -828,6 +876,100 @@ def build_tools(
             build_post_design,
         ),
         Tool(
+            "draft_month_plan",
+            "その月の投稿計画の骨格を作る。型の配分に従って本数を割り振り、"
+            "月内に均等に並べる。題材と素材は後から埋める。"
+            "既にその月の計画があるときは作らない。",
+            _obj(
+                {
+                    "year_month": {"type": "string", "description": "対象月 (例 2026-09)"},
+                    "mix": {
+                        "type": "string",
+                        "enum": list(PLAN_MIXES),
+                        "description": "月間の型の配分。省略時は事務所の設定値。",
+                    },
+                },
+                ["year_month"],
+            ),
+            draft_month_plan,
+        ),
+        Tool(
+            "plan_post",
+            "投稿を 1 本、計画に追加する。"
+            "案件に紐づける場合、掲載許諾がなければ追加できない。",
+            _obj(
+                {
+                    "scheduled_date": {"type": "string", "description": "予定日 (例 2026-09-10)"},
+                    "post_format": {
+                        "type": "string",
+                        "enum": list(POST_FORMATS),
+                        "description": "投稿の型",
+                    },
+                    "title": {"type": "string", "description": "題材・仮タイトル"},
+                    "project_id": {
+                        "type": "string",
+                        "description": "題材にする案件の ID(掲載許諾が必要)",
+                    },
+                    "note": {"type": "string", "description": "補足"},
+                },
+                ["scheduled_date", "post_format"],
+            ),
+            plan_post,
+        ),
+        Tool(
+            "update_planned_post",
+            "計画中の投稿を更新する。素材が揃っていないまま「原稿済」「投稿済」にはできない。"
+            "写真の有無を確認してから assets_ready を true にすること。",
+            _obj(
+                {
+                    "post_id": {"type": "string", "description": "投稿の ID"},
+                    "status": {
+                        "type": "string",
+                        "enum": list(POST_STATUSES),
+                        "description": "新しい状態",
+                    },
+                    "title": {"type": "string", "description": "題材・タイトル"},
+                    "assets_ready": {
+                        "type": "boolean",
+                        "description": "必要な素材が揃ったか(実際に確認したときだけ true)",
+                    },
+                    "design_path": {
+                        "type": "string",
+                        "description": "build_post_design で保存したデザインのパス",
+                    },
+                    "scheduled_date": {"type": "string", "description": "予定日の変更"},
+                    "note": {"type": "string", "description": "補足"},
+                },
+                ["post_id"],
+            ),
+            update_planned_post,
+        ),
+        Tool(
+            "list_planned_posts",
+            "投稿計画を予定日の早い順に返す。運用の話をする前に必ず現状を確認すること。",
+            _obj(
+                {
+                    "year_month": {"type": "string", "description": "対象月 (例 2026-09)"},
+                    "status": {
+                        "type": "string",
+                        "enum": list(POST_STATUSES),
+                        "description": "状態で絞る",
+                    },
+                },
+                [],
+            ),
+            list_planned_posts,
+        ),
+        Tool(
+            "plan_gaps",
+            "その月の計画の抜けを洗い出す。予定日を過ぎた投稿、素材待ちのまま"
+            "止まっている投稿、題材が未定のもの、目標本数への不足を返す。"
+            "運用の報告をする前に必ずこれを確認すること。",
+            _obj({"year_month": {"type": "string", "description": "対象月 (例 2026-09)"}},
+                 ["year_month"]),
+            plan_gaps,
+        ),
+        Tool(
             "record_land",
             "調べた敷地条件を案件に記録する。"
             "用途地域・建蔽率・容積率は、都市計画情報や役所で確認した値だけを入れること。"
@@ -1035,7 +1177,8 @@ class ToolBox:
             return f"ツール '{name}' は利用権限がありません。", True
         try:
             result = tool.handler(**arguments)
-        except (WorkspaceError, CompanyError, CompetitorError, InstagramError) as exc:
+        except (WorkspaceError, CompanyError, CompetitorError, InstagramError,
+                LandError, PlanError) as exc:
             return f"エラー: {exc}", True
         except TypeError as exc:
             return f"エラー: 引数が不正です ({exc})", True

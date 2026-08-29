@@ -33,9 +33,10 @@ from .billing import BILLING_STATUSES, EXAMPLE_SCHEDULE
 from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, CompetitorLedger
 from .copycheck import review_copy
 from .instagram import POST_FORMATS, THEMES, InstagramError
+from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
-from .workspace import Workspace, WorkspaceError, roster
+from .workspace import Workspace, WorkspaceError, now, roster
 
 # 文字化けの痕跡。半角カナと私用領域が多いなら、誤った文字コードで読んでいる。
 _GARBLED = re.compile(r"[\ue000-\uf8ff\uff61-\uff9f\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -521,6 +522,17 @@ def cmd_office(args: argparse.Namespace) -> int:
     if args.payment_term_days is not None:
         office.payment_term_days = args.payment_term_days
         changed = True
+    if args.instagram_cadence is not None:
+        office.instagram_cadence = args.instagram_cadence
+        changed = True
+    if args.instagram_mix is not None:
+        if args.instagram_mix not in PLAN_MIXES:
+            raise ValueError(f"不正な配分です: {args.instagram_mix}")
+        office.instagram_mix = args.instagram_mix
+        changed = True
+    if args.instagram_handle is not None:
+        office.instagram_handle = args.instagram_handle
+        changed = True
     if args.unit_prices is not None:
         office.unit_prices = _parse_unit_prices(args.unit_prices)
         changed = True
@@ -806,6 +818,68 @@ def cmd_post(args: argparse.Namespace) -> int:
     print(DIM("\n型の詳細: python -m ai_employee post --format works"))
     print(DIM("デザインの生成は社員に依頼する: "
               'ask --id shukyaku "施工事例の投稿を作って"'))
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Instagram の投稿計画を見る・作る。"""
+    office = OfficeProfile.load(args.office)
+    plan = InstagramPlan(args.office)
+    month = args.month or now().strftime("%Y-%m")
+
+    if args.mixes:
+        print(BOLD("月間の型の配分"))
+        for key, data in PLAN_MIXES.items():
+            body = "、".join(f"{POST_FORMATS[f]['label']} {n}" for f, n in data["mix"].items())
+            mark = BOLD(" ← 現在の設定") if key == office.instagram_mix else ""
+            print(f"  {_pad(key, 12)}{_pad(data['label'], 22)}{mark}")
+            print(DIM(f"      {data['purpose']}"))
+            print(DIM(f"      {body}"))
+        return 0
+
+    if args.draft:
+        created = plan.draft_month(month, args.mix or office.instagram_mix,
+                                   assignee="marke", by="cli")
+        print(BOLD(f"{month} の計画を {len(created)} 本作成しました。"))
+        print(DIM("  題材と素材はこれから埋めます。"))
+        print()
+
+    posts = plan.list(month)
+    gaps = plan.gaps(month, office.instagram_cadence or None)
+
+    print(BOLD(f"{month} の投稿計画") + DIM(f"  {gaps['planned']} 本"
+          + (f" / 目標 {gaps['cadence']} 本" if gaps["cadence"] else "")
+          + f" / 投稿済 {gaps['published']} 本"))
+    if gaps["shortfall"]:
+        print(RED(f"  目標に {gaps['shortfall']} 本足りません。"))
+    print()
+
+    if not posts:
+        print(DIM("  計画がありません。--draft で骨格を作れます。"))
+        return 0
+
+    tone = {"投稿済": BOLD, "原稿済": CYAN, "素材待ち": RED, "見送り": DIM}
+    for post in posts:
+        mark = tone.get(post["status"], DIM)
+        assets = "" if post["assets_ready"] else RED(" 素材未確認")
+        print(f"  {post['scheduled_date']}  {_pad(post['id'], 10)}"
+              f"{_pad(post['format_label'], 22)}{mark(_pad(post['status'], 8))}{assets}")
+        if post["title"]:
+            print(f"      {post['title']}")
+        else:
+            print(DIM("      題材が未定"))
+        if post["consent_conditions"]:
+            print(DIM(f"      掲載条件: {post['consent_conditions']}"))
+
+    for label, key, tone_fn in [
+        ("予定日を過ぎている", "overdue", RED),
+        ("素材待ちのまま止まっている", "waiting_assets", RED),
+        ("題材が未定", "no_title", DIM),
+    ]:
+        if gaps[key]:
+            print(tone_fn(f"\n  {label} {len(gaps[key])} 本: ")
+                  + "、".join(p["id"] for p in gaps[key]))
+    print(DIM(f"\n  {gaps['note']}"))
     return 0
 
 
@@ -1263,6 +1337,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="入金遅延とみなす日数(既定 30)",
     )
+    p_office.add_argument(
+        "--instagram-cadence", dest="instagram_cadence", type=int,
+        help="Instagram の月の目標投稿数",
+    )
+    p_office.add_argument(
+        "--instagram-mix", dest="instagram_mix", choices=list(PLAN_MIXES),
+        help="月間の型の配分",
+    )
+    p_office.add_argument(
+        "--instagram-handle", dest="instagram_handle", help="Instagram アカウント",
+    )
     p_office.set_defaults(func=cmd_office)
 
     p_competitors = sub.add_parser("competitors", help="調査済みの競合と訴求軸の集計")
@@ -1276,6 +1361,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_post = sub.add_parser("post", help="Instagram 投稿の型を一覧する")
     p_post.add_argument("--format", choices=list(POST_FORMATS), help="型の詳細を表示する")
     p_post.set_defaults(func=cmd_post)
+
+    p_plan = sub.add_parser("plan", help="Instagram の投稿計画を見る・作る")
+    p_plan.add_argument("--month", help="対象月 (例 2026-09)。省略時は今月")
+    p_plan.add_argument("--draft", action="store_true", help="その月の計画の骨格を作る")
+    p_plan.add_argument("--mix", choices=list(PLAN_MIXES), help="型の配分(--draft と併用)")
+    p_plan.add_argument("--mixes", action="store_true", help="配分の選択肢を一覧する")
+    p_plan.set_defaults(func=cmd_plan)
 
     p_land = sub.add_parser(
         "land", help="土地診断(建てられるボリュームの目安と、確認すべき論点)"
@@ -1425,7 +1517,8 @@ def main(argv: list[str] | None = None) -> int:
         set_color(False)
     try:
         return args.func(args)
-    except (WorkspaceError, CompanyError, LandError, CompetitorError, InstagramError) as exc:
+    except (WorkspaceError, CompanyError, LandError, CompetitorError,
+            InstagramError, PlanError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:

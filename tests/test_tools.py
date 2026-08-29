@@ -575,3 +575,55 @@ def test_保存先はワークスペース外に出られない(workspace, tmp_p
     })
     assert is_error
     assert "ワークスペース外" in output
+
+
+# ------------------------------------------------------ Instagram 運用計画
+
+
+def _plan_box(workspace, tmp_path, allowed, cadence=6):
+    from ai_employee.company import OfficeProfile, ProjectLedger
+    from ai_employee.tools import ToolBox
+
+    OfficeProfile(name="A設計", instagram_cadence=cadence).save(tmp_path)
+    ledger = ProjectLedger(tmp_path)
+    return ToolBox(workspace, allowed, ledger=ledger), ledger
+
+
+def test_月の計画を作れる(workspace, tmp_path):
+    box, _ = _plan_box(workspace, tmp_path, ["draft_month_plan", "list_planned_posts"])
+    result = json.loads(box.run("draft_month_plan", {"year_month": "2026-09"})[0])
+    assert result["created"] == 6
+    assert "素材が揃うまで原稿済にはできない" in result["next"]
+
+    listed = json.loads(box.run("list_planned_posts", {"year_month": "2026-09"})[0])
+    assert listed["count"] == 6
+
+
+def test_許諾のない案件は計画に入れられない(workspace, tmp_path):
+    box, ledger = _plan_box(workspace, tmp_path, ["plan_post"])
+    pid = ledger.add("K様邸 新築")["id"]
+    output, is_error = box.run("plan_post", {
+        "scheduled_date": "2026-09-10", "post_format": "works", "project_id": pid,
+    })
+    assert is_error
+    assert "掲載許諾" in output
+
+
+def test_素材未確認で原稿済にできない(workspace, tmp_path):
+    box, _ = _plan_box(workspace, tmp_path, ["plan_post", "update_planned_post"])
+    post = json.loads(box.run("plan_post", {
+        "scheduled_date": "2026-09-10", "post_format": "works", "title": "光の回る家",
+    })[0])
+    output, is_error = box.run(
+        "update_planned_post", {"post_id": post["id"], "status": "原稿済"})
+    assert is_error
+    assert "素材が揃っていない" in output
+
+
+def test_計画の抜けを検出できる(workspace, tmp_path):
+    box, _ = _plan_box(workspace, tmp_path, ["plan_post", "plan_gaps"])
+    box.run("plan_post", {"scheduled_date": "2026-09-10", "post_format": "works"})
+    gaps = json.loads(box.run("plan_gaps", {"year_month": "2026-09"})[0])
+    assert gaps["cadence"] == 6           # 事務所の設定値を使う
+    assert gaps["shortfall"] == 5
+    assert len(gaps["no_title"]) == 1

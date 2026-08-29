@@ -247,3 +247,25 @@ def test_外部の読み込み先を持たない(server):
     """社内ネットワークが外に出られなくても、また通信が漏れないように。"""
     _, body = get(server, "/")
     assert not re.search(r'<(script|link|img)[^>]+(src|href)="https?://', body)
+
+
+def test_発信画面に計画と注意が出る(office_root):
+    from ai_employee.instagram_plan import InstagramPlan
+
+    plan = InstagramPlan(office_root)
+    posts = plan.draft_month("2026-09", "standard")
+    plan.update(posts[0]["id"], title="光の回る家", assets_ready=True, status="投稿済")
+    plan.update(posts[1]["id"], status="素材待ち")
+
+    html = Views(office_root).plan_view("2026-09")
+    assert "2026-09 の投稿計画" in html
+    assert "光の回る家" in html
+    assert "素材未確認" in html
+    assert "題材が未定" in html
+    # 取得できない数値を語らせない
+    assert "フォロワー数や保存数は取得していません" in html
+
+
+def test_計画がない月でも落ちない(office_root):
+    html = Views(office_root).plan_view("2030-01")
+    assert "計画がありません" in html

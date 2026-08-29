@@ -564,7 +564,8 @@ def test_未設定の設定には次に打つコマンドが出る(tmp_path, cap
 def test_すべて揃えば残るのは認証だけ(tmp_path, capsys, monkeypatch):
     run(["office", "--name", "A設計", "--unit-prices", "戸建住宅:80-100",
          "--design-fee-rate", "10", "--tax-rate", "10",
-         "--billing-schedule", "契約金:100:設計契約"], tmp_path)
+         "--billing-schedule", "契約金:100:設計契約",
+         "--instagram-cadence", "6"], tmp_path)
     run(["hire-team"], tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-for-test")
     capsys.readouterr()
@@ -651,3 +652,51 @@ def test_型の詳細に必要な素材が出る(tmp_path, capsys):
 def test_不正な型は引数解析で弾かれる(tmp_path):
     with pytest.raises(SystemExit):
         run(["post", "--format", "バズる投稿"], tmp_path)
+
+
+# ------------------------------------------------------ Instagram 運用計画
+
+
+def test_配分の選択肢を一覧できる(tmp_path, capsys):
+    assert run(["plan", "--mixes"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "standard" in out and "認知重視" in out
+
+
+def test_月の計画を作って表示できる(tmp_path, capsys):
+    run(["office", "--name", "A設計", "--instagram-cadence", "6"], tmp_path)
+    capsys.readouterr()
+    assert run(["plan", "--month", "2026-09", "--draft"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "6 本作成しました" in out
+    assert "施工事例カルーセル" in out
+    assert "題材が未定" in out
+
+
+def test_計画がなければ作り方を案内する(tmp_path, capsys):
+    assert run(["plan", "--month", "2026-09"], tmp_path) == 0
+    assert "--draft で骨格を作れます" in capsys.readouterr().out
+
+
+def test_目標に足りなければ知らせる(tmp_path, capsys):
+    run(["office", "--name", "A設計", "--instagram-cadence", "8"], tmp_path)
+    run(["plan", "--month", "2026-09", "--draft", "--mix", "light"], tmp_path)
+    capsys.readouterr()
+    assert run(["plan", "--month", "2026-09"], tmp_path) == 0
+    assert "目標に 4 本足りません" in capsys.readouterr().out
+
+
+def test_二重作成は拒否される(tmp_path, capsys):
+    run(["plan", "--month", "2026-09", "--draft"], tmp_path)
+    capsys.readouterr()
+    assert run(["plan", "--month", "2026-09", "--draft"], tmp_path) == 1
+    assert "既に計画があります" in capsys.readouterr().err
+
+
+def test_運用設定を保存できる(tmp_path):
+    run(["office", "--name", "A設計", "--instagram-cadence", "8",
+         "--instagram-mix", "reach", "--instagram-handle", "@apex"], tmp_path)
+    saved = json.loads((tmp_path / "_company" / "office.json").read_text(encoding="utf-8"))
+    assert saved["instagram_cadence"] == 8
+    assert saved["instagram_mix"] == "reach"
+    assert saved["instagram_handle"] == "@apex"
