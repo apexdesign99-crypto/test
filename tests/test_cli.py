@@ -774,3 +774,93 @@ def test_期限切れは取り直しを促す(tmp_path, capsys):
     capsys.readouterr()
     run(["instagram"], tmp_path)
     assert "取り直しが必要" in capsys.readouterr().out
+
+
+# ------------------------------------------------------ Instagram への公開
+
+
+def setup_publish(tmp_path, consent=None):
+    from ai_employee.company import ProjectLedger
+    from ai_employee.instagram_api import Credentials, save_credentials
+    from ai_employee.instagram_plan import InstagramPlan
+
+    run(["office", "--name", "A設計", "--instagram-cadence", "6"], tmp_path)
+    save_credentials(Credentials(
+        access_token="TOKEN", username="apex_sekkei",
+        expires_at="2099-01-01T00:00:00+00:00"), tmp_path)
+
+    ledger = ProjectLedger(tmp_path)
+    plan = InstagramPlan(tmp_path)
+    project_id = None
+    if consent:
+        project = ledger.add("K様邸 新築", "K様", "戸建住宅")
+        ledger.record_consent(project["id"], *consent)
+        project_id = project["id"]
+    post = plan.add("2026-09-08", "knowledge", "無垢の床は、10年後がいちばん良い",
+                    project_id=project_id or "", ledger=ledger if project_id else None)
+    plan.update(post["id"], assets_ready=True, status="原稿済")
+    return post["id"]
+
+
+def test_下見では何も投稿しない(tmp_path, capsys):
+    post_id = setup_publish(tmp_path)
+    capsys.readouterr()
+    assert run(["publish", post_id, "--image-url", "https://example.com/a.jpg"],
+               tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "下見です。まだ何も投稿していません" in out
+    assert "--confirm を付けて再実行" in out
+    assert "公開すると取り消せません" in out
+
+
+def test_手元のファイルは弾かれエラー終了(tmp_path, capsys):
+    post_id = setup_publish(tmp_path)
+    capsys.readouterr()
+    assert run(["publish", post_id, "--image-url", "/Users/apex/a.png"], tmp_path) == 1
+    assert "手元の PC のファイルは投稿できません" in capsys.readouterr().out
+
+
+def test_許諾のない案件は公開できない(tmp_path, capsys):
+    post_id = setup_publish(tmp_path)
+    from ai_employee.company import ProjectLedger
+    from ai_employee.instagram_plan import InstagramPlan
+
+    # 許諾のない案件に後から紐づける(台帳を直接編集した想定)
+    project = ProjectLedger(tmp_path).add("T様邸")
+    import json
+    path = InstagramPlan(tmp_path).path
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data[0]["project_id"] = project["id"]
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    capsys.readouterr()
+    assert run(["publish", post_id, "--image-url", "https://example.com/a.jpg"],
+               tmp_path) == 1
+    assert "掲載許諾" in capsys.readouterr().out
+
+
+def test_掲載条件と表現の指摘が下見に出る(tmp_path, capsys):
+    post_id = setup_publish(tmp_path, consent=("条件付き", "施主名は伏せる"))
+    capsys.readouterr()
+    run(["publish", post_id, "--image-url", "https://example.com/a.jpg",
+         "--caption", "K様邸の中庭。地域No.1の設計事務所です。"], tmp_path)
+    out = capsys.readouterr().out
+    assert "確認してください" in out
+    assert "施主名は伏せる" in out
+    assert "No.1" in out
+
+
+def test_画像URLは必須(tmp_path):
+    post_id = setup_publish(tmp_path)
+    with pytest.raises(SystemExit):
+        run(["publish", post_id], tmp_path)
+
+
+def test_未接続なら公開できない(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("INSTAGRAM_ACCESS_TOKEN", raising=False)
+    from ai_employee.instagram_plan import InstagramPlan
+
+    post = InstagramPlan(tmp_path).add("2026-09-08", "knowledge", "本文")
+    assert run(["publish", post["id"], "--image-url", "https://example.com/a.jpg"],
+               tmp_path) == 1
+    assert "接続していません" in capsys.readouterr().err

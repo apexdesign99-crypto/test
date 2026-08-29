@@ -772,8 +772,27 @@ Facebook ページの連携は不要で、自社アカウントだけを見る�
 - **`—` は取得できなかった指標です。0 ではありません。**
   「反応がなかった」と「取得できなかった」を混ぜないためです
 
-> **投稿の自動公開は実装していません。** 別の権限が必要なうえ誤投稿の影響が大きいので、
-> 公開は Instagram アプリから人が行う前提です。ストーリーズの指標もこの経路では取れません。
+### 投稿の公開
+
+```bash
+python -m ai_employee publish <計画のID> --image-url "https://example.com/post.jpg"
+python -m ai_employee publish <計画のID> --image-url "..." --confirm
+```
+
+**公開は取り消せない**ので、安全策を4つ入れています。
+
+1. **AI社員はこの操作を行えません。** 公開ツールを社員に渡していないので、
+   社員が独断で投稿することはありません。実行は人が行います
+2. **既定は下見。** `--confirm` を付けない限り、API を一度も呼びません
+3. **許諾のない案件と、既に投稿済みのものは `--confirm` でも通りません**
+4. 掲載条件と表現の指摘は下見に出ます
+
+**画像は公開された HTTPS の URL が必要です。** Instagram のサーバが取りに来るため、
+手元の PC のファイルは投稿できません。追加の権限
+(`instagram_business_content_publish`)も要ります。詳細は
+[docs/instagram-setup.md](docs/instagram-setup.md) を参照してください。
+
+> ストーリーズへの投稿と、ストーリーズの指標には対応していません。
 
 ---
 
@@ -929,6 +948,7 @@ ai-office/
 | `post` | Instagram 投稿の型を一覧する |
 | `plan` | Instagram の投稿計画を見る・作る(`--draft` / `--mixes`) |
 | `instagram` | Instagram との接続と実績の取り込み(`--connect` / `--sync` / `--refresh`) |
+| `publish` | 計画中の投稿を公開する(既定は下見。`--confirm` で実行) |
 | `tasks` / `notes` | 社員のタスク・メモを人間が確認する |
 | `templates` | 職種テンプレートを一覧する |
 

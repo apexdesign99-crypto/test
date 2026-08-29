@@ -34,6 +34,7 @@ from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, Competit
 from .copycheck import review_copy
 from .instagram import POST_FORMATS, THEMES, InstagramError
 from .instagram_api import InstagramAPIError
+from .instagram_publish import PublishError
 from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
@@ -822,6 +823,67 @@ def cmd_post(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publish(args: argparse.Namespace) -> int:
+    """計画中の投稿を Instagram に公開する。
+
+    **AI社員はこの操作を行えない。** 誤投稿は取り消せないため、実行は人に限る。
+    """
+    from . import instagram_api as api
+    from .instagram_publish import Publisher, PublishError
+
+    root = args.office
+    credentials = api.load_credentials(root)
+    if credentials is None:
+        print(RED("Instagram に接続していません。"), file=sys.stderr)
+        print(DIM("  docs/instagram-setup.md の手順で接続してください。"), file=sys.stderr)
+        return 1
+
+    plan = InstagramPlan(root)
+    ledger = ProjectLedger(root)
+    post = plan.get(args.post_id)
+    caption = args.caption if args.caption is not None else post.get("title", "")
+    consent = (ledger.publication_status(post["project_id"])
+               if post.get("project_id") else None)
+
+    publisher = Publisher(credentials)
+    result = publisher.publish(args.image_url, caption, confirm=args.confirm,
+                               plan_post=post, consent=consent)
+
+    if not args.confirm:
+        print(BOLD("下見です。まだ何も投稿していません。"))
+        print()
+        print(f"  計画    : [{post['id']}] {post['format_label']}"
+              f"  予定日 {post['scheduled_date']}")
+        print(f"  画像    : {result['image_url'] or RED('未指定')}")
+        print(f"  本文    : {result['caption_length']} 文字")
+        for line in (caption or "").splitlines():
+            print(DIM(f"    {line}"))
+        if result["blockers"]:
+            print(RED(f"\n  公開できません({len(result['blockers'])} 件)"))
+            for item in result["blockers"]:
+                print(RED(f"    ・{item}"))
+        if result["warnings"]:
+            print(f"\n  {BOLD('確認してください')}({len(result['warnings'])} 件)")
+            for item in result["warnings"]:
+                print(f"    ・{item}")
+        print()
+        if result["can_publish"]:
+            print(BOLD("問題なければ --confirm を付けて再実行してください。"))
+            print(DIM("  公開すると取り消せません。"))
+        return 0 if result["can_publish"] else 1
+
+    print(BOLD("公開しました。"))
+    print(DIM(f"  投稿 ID: {result['media_id']}"))
+    plan.update(args.post_id, status="投稿済", assets_ready=True)
+    if post.get("project_id"):
+        ledger.log_publication(
+            post["project_id"], "Instagram", caption.splitlines()[0][:60] or "投稿",
+            by="cli",
+        )
+        print(DIM("  案件の発信履歴にも記録しました。"))
+    return 0
+
+
 def cmd_instagram(args: argparse.Namespace) -> int:
     """Instagram との接続・取り込み・状態確認。"""
     from . import instagram_api as api
@@ -1453,6 +1515,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_ig.add_argument("--limit", type=int, default=25, help="取り込む投稿数(既定 25)")
     p_ig.set_defaults(func=cmd_instagram)
 
+    p_publish = sub.add_parser(
+        "publish", help="計画中の投稿を Instagram に公開する(人が実行する)"
+    )
+    p_publish.add_argument("post_id", help="計画中の投稿の ID")
+    p_publish.add_argument(
+        "--image-url", dest="image_url", required=True,
+        help="公開された HTTPS の画像 URL(手元のファイルは不可)",
+    )
+    p_publish.add_argument("--caption", help="本文。省略時は計画の題材を使う")
+    p_publish.add_argument(
+        "--confirm", action="store_true",
+        help="実際に公開する。付けなければ下見のみ",
+    )
+    p_publish.set_defaults(func=cmd_publish)
+
     p_plan = sub.add_parser("plan", help="Instagram の投稿計画を見る・作る")
     p_plan.add_argument("--month", help="対象月 (例 2026-09)。省略時は今月")
     p_plan.add_argument("--draft", action="store_true", help="その月の計画の骨格を作る")
@@ -1609,7 +1686,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (WorkspaceError, CompanyError, LandError, CompetitorError,
-            InstagramError, PlanError, InstagramAPIError) as exc:
+            InstagramError, PlanError, InstagramAPIError, PublishError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:
