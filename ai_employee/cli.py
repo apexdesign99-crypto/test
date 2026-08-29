@@ -387,6 +387,44 @@ def _check_api() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:160]}"
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """事務所の状況をブラウザで見る画面を立ち上げる。"""
+    from .webapp import serve
+
+    root = args.office or office_root()
+    try:
+        httpd = serve(root, args.port)
+    except OSError as exc:
+        print(RED(f"ポート {args.port} を使えません: {exc}"), file=sys.stderr)
+        print(DIM("  別のポートを指定してください: --port 8766"), file=sys.stderr)
+        return 1
+
+    url = f"http://127.0.0.1:{args.port}/"
+    print(BOLD("画面を開きました。ブラウザで次の URL を開いてください:"))
+    print(f"  {url}")
+    print()
+    print(DIM(f"  データの場所 : {root}"))
+    print(DIM("  閲覧専用です。記録の追加・変更は CLI と AI社員が行います。"))
+    print(DIM("  この端末からのみ開けます(同じ社内 LAN の他の PC からは見えません)。"))
+    print(DIM("\n  終了するには Ctrl+C を押してください。"))
+
+    if not args.no_browser:
+        import threading
+        import webbrowser
+
+        # サーバが待ち受けを始めてから開く
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print()
+        print(DIM("画面を閉じました。"))
+    finally:
+        httpd.server_close()
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """初回実行の前に、足りないものと次の一手を示す。"""
     ok_mark, ng_mark = BOLD("  OK "), RED("  要対応 ")
@@ -1165,6 +1203,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_hire.add_argument("--web", action="store_true", help="Web 検索の権限を付与")
     p_hire.add_argument("--force", action="store_true", help="既存社員を上書き")
     p_hire.set_defaults(func=cmd_hire)
+
+    p_serve = sub.add_parser("serve", help="事務所の状況をブラウザで見る画面を開く")
+    p_serve.add_argument(
+        "--port", type=int, default=8765, help="待ち受けるポート(既定 8765)"
+    )
+    p_serve.add_argument(
+        "--no-browser", action="store_true", help="ブラウザを自動で開かない"
+    )
+    p_serve.set_defaults(func=cmd_serve)
 
     p_doctor = sub.add_parser(
         "doctor", help="初回実行の前に、足りないものと次の一手を確認する"
