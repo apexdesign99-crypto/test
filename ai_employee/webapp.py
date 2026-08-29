@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from .billing import totals
 from .company import STAGES, OfficeProfile, ProjectLedger
 from .competitor import APPEAL_AXES, CompetitorLedger
+from .instagram_api import load_credentials, load_metrics
 from .instagram_plan import InstagramPlan
 from .workspace import Workspace, roster
 
@@ -406,10 +407,58 @@ class Views:
                   "この月の計画がありません。CLI の plan --draft で骨格を作れます。"),
             len(posts)))
 
-        handle = f'({esc(office.instagram_handle)})' if office.instagram_handle else ""
-        blocks.append(f'<p class="basis">フォロワー数や保存数は取得していません。'
-                      f'Instagram の管理画面で確認した値を使ってください。{handle}</p>')
+        blocks.append(self._metrics_block())
         return "".join(blocks)
+
+    def _metrics_block(self) -> str:
+        """Instagram から取り込んだ実績。未接続なら手順を案内する。"""
+        credentials = load_credentials(self.root)
+        if credentials is None:
+            return section("実績", '<p class="empty">Instagram に接続していません。'
+                           'docs/instagram-setup.md の手順で接続すると、'
+                           'views・リーチ・保存が表示されます。</p>')
+
+        summary = credentials.summary()
+        warning = ""
+        if summary["expired"]:
+            warning = ('<p class="alert">アクセストークンの有効期限が切れています。'
+                       '取り直しが必要です。</p>')
+        elif summary["needs_refresh"]:
+            warning = (f'<p class="alert">トークンの残り {summary["days_left"]} 日。'
+                       f'<code>instagram --refresh</code> で更新してください。</p>')
+
+        metrics = load_metrics(self.root)
+        if not metrics.get("synced_at"):
+            return section("実績", warning + '<p class="empty">まだ取り込んでいません。'
+                           '<code>instagram --sync</code> で取得できます。</p>')
+
+        account = metrics["account"]
+        cards = "".join([
+            card("フォロワー", f'{account.get("followers_count") or "—"}'),
+            card("投稿", f'{account.get("media_count") or "—"} 件'),
+            card("最終取り込み", metrics["synced_at"][:10]),
+        ])
+
+        def number(value: Any) -> str:
+            return f"{value:,}" if isinstance(value, int) else '<span class="muted">—</span>'
+
+        rows = []
+        for media in metrics["media"][:20]:
+            insights = media.get("insights") or {}
+            caption = (media.get("caption") or "").splitlines()
+            title = esc(caption[0][:38]) if caption else '<span class="muted">—</span>'
+            if media.get("permalink"):
+                title = (f'<a href="{esc(media["permalink"])}" target="_blank" '
+                         f'rel="noopener">{title}</a>')
+            rows.append([
+                esc(media["timestamp"][:10]), esc(media.get("media_type", "")), title,
+                number(insights.get("views")), number(insights.get("reach")),
+                number(insights.get("saved")), number(media.get("like_count")),
+            ])
+        return section("実績", warning + f'<div class="cards">{cards}</div>' + table(
+            ["投稿日", "種別", "内容", "views", "リーチ", "保存", "いいね"], rows)
+            + '<p class="basis">— は取得できなかった指標です。0 ではありません。'
+              'ストーリーズの指標と投稿の自動公開には対応していません。</p>')
 
     # --------------------------------------------------------------- 競合
 

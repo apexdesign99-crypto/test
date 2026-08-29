@@ -7,3 +7,6 @@ dist/
 .venv/
 # 社員の勤務データ(既定の置き場)
 ai-office/
+
+# Instagram の資格情報(万一 ai-office の外に置いた場合の保険)
+instagram_credentials.json

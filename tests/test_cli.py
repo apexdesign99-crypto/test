@@ -700,3 +700,77 @@ def test_運用設定を保存できる(tmp_path):
     assert saved["instagram_cadence"] == 8
     assert saved["instagram_mix"] == "reach"
     assert saved["instagram_handle"] == "@apex"
+
+
+# ------------------------------------------------------ Instagram 連携
+
+
+def fake_instagram(url: str) -> dict:
+    if "/me?" in url:
+        return {"id": "178", "username": "apex_sekkei", "account_type": "BUSINESS",
+                "media_count": 42, "followers_count": 1280}
+    if "me/media" in url:
+        return {"data": [{"id": "m1", "caption": "北向きの敷地に",
+                          "media_type": "CAROUSEL_ALBUM", "permalink": "https://x/p/1",
+                          "timestamp": "2026-09-03T10:00:00+0000",
+                          "like_count": 84, "comments_count": 6}]}
+    if "insights" in url:
+        return {"data": [{"name": "views", "values": [{"value": 3120}]},
+                         {"name": "saved", "values": [{"value": 58}]}]}
+    return {}
+
+
+def test_未接続なら手順を案内してエラー終了(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("INSTAGRAM_ACCESS_TOKEN", raising=False)
+    assert run(["instagram"], tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "接続していません" in out
+    assert "instagram-setup.md" in out
+
+
+def test_接続してもトークンを表示しない(tmp_path, capsys):
+    from ai_employee.instagram_api import connect
+
+    connect("SECRET_TOKEN", tmp_path, fake_instagram)
+    capsys.readouterr()
+    assert run(["instagram"], tmp_path) == 0
+    captured = capsys.readouterr()
+    assert "apex_sekkei" in captured.out
+    assert "SECRET_TOKEN" not in captured.out + captured.err
+
+
+def test_取り込み前は取得方法を案内する(tmp_path, capsys):
+    from ai_employee.instagram_api import connect
+
+    connect("TOKEN", tmp_path, fake_instagram)
+    capsys.readouterr()
+    run(["instagram"], tmp_path)
+    assert "--sync で取得できます" in capsys.readouterr().out
+
+
+def test_実績を表示できる(tmp_path, capsys):
+    from ai_employee.instagram_api import connect, sync
+
+    connect("TOKEN", tmp_path, fake_instagram)
+    sync(tmp_path, 25, fake_instagram)
+    capsys.readouterr()
+    assert run(["instagram"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "フォロワー 1280" in out
+    assert "3,120" in out                       # views
+    assert "取得できなかった指標" in out
+
+
+def test_期限切れは取り直しを促す(tmp_path, capsys):
+    from datetime import timedelta
+
+    from ai_employee.instagram_api import Credentials, save_credentials
+    from ai_employee.workspace import now
+
+    save_credentials(Credentials(
+        access_token="OLD", username="apex_sekkei",
+        expires_at=(now() - timedelta(days=3)).isoformat(timespec="seconds"),
+    ), tmp_path)
+    capsys.readouterr()
+    run(["instagram"], tmp_path)
+    assert "取り直しが必要" in capsys.readouterr().out

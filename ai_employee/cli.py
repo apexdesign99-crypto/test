@@ -33,6 +33,7 @@ from .billing import BILLING_STATUSES, EXAMPLE_SCHEDULE
 from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, CompetitorLedger
 from .copycheck import review_copy
 from .instagram import POST_FORMATS, THEMES, InstagramError
+from .instagram_api import InstagramAPIError
 from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
@@ -821,6 +822,89 @@ def cmd_post(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_instagram(args: argparse.Namespace) -> int:
+    """Instagram との接続・取り込み・状態確認。"""
+    from . import instagram_api as api
+
+    root = args.office
+
+    if args.connect:
+        credentials = api.connect(args.connect, root)
+        print(BOLD(f"@{credentials.username} に接続しました。"))
+        print(DIM(f"  保存先: {api.credentials_path(root)}(所有者のみ読み取り可)"))
+        print(DIM(f"  有効期限: {credentials.expires_at[:10]} 頃"))
+        print(DIM("  トークンは画面にもログにも出しません。"))
+        print()
+        print("次: python -m ai_employee instagram --sync")
+        return 0
+
+    credentials = api.load_credentials(root)
+    if credentials is None:
+        print(RED("Instagram に接続していません。"))
+        print(DIM("  docs/instagram-setup.md の手順でトークンを取得し、"
+                  "次を実行してください:"))
+        print(DIM('    python -m ai_employee instagram --connect "<トークン>"'))
+        return 1
+
+    if args.refresh:
+        client = api.InstagramClient(credentials)
+        updated = client.refresh_token()
+        api.save_credentials(updated, root)
+        print(BOLD("トークンを更新しました。"))
+        print(DIM(f"  新しい有効期限: {updated.expires_at[:10]} 頃"))
+        return 0
+
+    if args.sync:
+        result = api.sync(root, args.limit)
+        got = sum(1 for m in result["media"] if m["insights"])
+        print(BOLD(f"{len(result['media'])} 件の投稿を取り込みました。"))
+        print(DIM(f"  指標を取得できた投稿: {got} 件"))
+        if got < len(result["media"]):
+            print(DIM("  取得できなかった投稿は欠測として残しています(0 ではありません)。"))
+        print()
+
+    # 状態表示
+    summary = credentials.summary()
+    print(BOLD(f"@{summary['username'] or '(未取得)'}"))
+    left = summary["days_left"]
+    if summary["expired"]:
+        print(RED("  トークンの有効期限が切れています。取り直しが必要です。"))
+    elif summary["needs_refresh"]:
+        print(RED(f"  トークンの残り {left} 日。--refresh で更新してください。"))
+    elif left is not None:
+        print(DIM(f"  トークンの残り {left} 日"))
+
+    metrics = api.load_metrics(root)
+    if not metrics.get("synced_at"):
+        print(DIM("\n  まだ取り込んでいません。--sync で取得できます。"))
+        return 0
+
+    account = metrics["account"]
+    print(DIM(f"\n  最終取り込み: {metrics['synced_at'][:16].replace('T', ' ')}"))
+    print(f"  フォロワー {account.get('followers_count') or '—'} / "
+          f"投稿 {account.get('media_count') or '—'} 件")
+    print()
+    header = (_pad("投稿日", 12) + _pad("種別", 18)
+              + _ralign("views", 9) + _ralign("リーチ", 9)
+              + _ralign("保存", 7) + _ralign("いいね", 8))
+    print(DIM("  " + header))
+    for media in metrics["media"][: args.limit]:
+        insights = media.get("insights") or {}
+
+        def cell(key: str, source: dict = insights) -> str:
+            value = source.get(key)
+            return f"{value:,}" if isinstance(value, int) else DIM("—")
+
+        print(f"  {_pad(media['timestamp'][:10], 12)}"
+              f"{_pad(media.get('media_type', ''), 18)}"
+              f"{_ralign(cell('views'), 9)}"
+              f"{_ralign(cell('reach'), 9)}"
+              f"{_ralign(cell('saved'), 7)}"
+              f"{_ralign(cell('like_count', media), 8)}")
+    print(DIM("\n  — は取得できなかった指標です。0 ではありません。"))
+    return 0
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     """Instagram の投稿計画を見る・作る。"""
     office = OfficeProfile.load(args.office)
@@ -1362,6 +1446,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_post.add_argument("--format", choices=list(POST_FORMATS), help="型の詳細を表示する")
     p_post.set_defaults(func=cmd_post)
 
+    p_ig = sub.add_parser("instagram", help="Instagram との接続と実績の取り込み")
+    p_ig.add_argument("--connect", metavar="トークン", help="長期アクセストークンを保存する")
+    p_ig.add_argument("--sync", action="store_true", help="投稿と指標を取り込む")
+    p_ig.add_argument("--refresh", action="store_true", help="トークンを更新する(さらに60日)")
+    p_ig.add_argument("--limit", type=int, default=25, help="取り込む投稿数(既定 25)")
+    p_ig.set_defaults(func=cmd_instagram)
+
     p_plan = sub.add_parser("plan", help="Instagram の投稿計画を見る・作る")
     p_plan.add_argument("--month", help="対象月 (例 2026-09)。省略時は今月")
     p_plan.add_argument("--draft", action="store_true", help="その月の計画の骨格を作る")
@@ -1518,7 +1609,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (WorkspaceError, CompanyError, LandError, CompetitorError,
-            InstagramError, PlanError) as exc:
+            InstagramError, PlanError, InstagramAPIError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:

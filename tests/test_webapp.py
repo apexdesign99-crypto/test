@@ -262,10 +262,51 @@ def test_発信画面に計画と注意が出る(office_root):
     assert "光の回る家" in html
     assert "素材未確認" in html
     assert "題材が未定" in html
-    # 取得できない数値を語らせない
-    assert "フォロワー数や保存数は取得していません" in html
+    # 未接続なら実績の代わりに接続手順を案内する
+    assert "Instagram に接続していません" in html
 
 
 def test_計画がない月でも落ちない(office_root):
     html = Views(office_root).plan_view("2030-01")
     assert "計画がありません" in html
+
+
+def test_実績が発信画面に出る(office_root):
+    from ai_employee.instagram_api import connect, sync
+
+    def fake(url):
+        if "/me?" in url:
+            return {"id": "1", "username": "apex_sekkei", "account_type": "BUSINESS",
+                    "media_count": 42, "followers_count": 1280}
+        if "me/media" in url:
+            return {"data": [{"id": "m1", "caption": "北向きの敷地に\n光が回る家",
+                              "media_type": "CAROUSEL_ALBUM",
+                              "permalink": "https://instagram.com/p/x1",
+                              "timestamp": "2026-09-03T10:00:00+0000",
+                              "like_count": 84, "comments_count": 6}]}
+        if "insights" in url:
+            return {"data": [{"name": "views", "values": [{"value": 3120}]}]}
+        return {}
+
+    connect("SECRET", office_root, fake)
+    sync(office_root, 25, fake)
+
+    html = Views(office_root).plan_view("2026-09")
+    assert "フォロワー" in html and "1,280" not in html   # 生値をそのまま出す
+    assert "3,120" in html
+    assert "北向きの敷地に" in html
+    assert "SECRET" not in html                          # トークンは出さない
+    assert "0 ではありません" in html
+
+
+def test_期限切れの警告が画面に出る(office_root):
+    from datetime import timedelta
+
+    from ai_employee.instagram_api import Credentials, save_credentials
+    from ai_employee.workspace import now
+
+    save_credentials(Credentials(
+        access_token="T", username="apex",
+        expires_at=(now() - timedelta(days=1)).isoformat(timespec="seconds"),
+    ), office_root)
+    assert "有効期限が切れています" in Views(office_root).plan_view("2026-09")
