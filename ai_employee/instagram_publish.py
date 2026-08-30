@@ -25,7 +25,7 @@ import urllib.request
 from typing import Any, Callable
 
 from .copycheck import review_copy
-from .instagram_api import BASE_URL, Credentials, InstagramAPIError, InstagramClient
+from .instagram_api import BASE_URL, Credentials, InstagramAPIError, http_get
 
 # 公開に必要な追加の権限。読み取りだけなら要らない。
 PUBLISH_SCOPE = "instagram_business_content_publish"
@@ -86,8 +86,9 @@ class Publisher:
             raise PublishError("アクセストークンが設定されていません")
         self.credentials = credentials
         self._post = poster or _post
-        self._client = InstagramClient(credentials, getter) if getter else None
-        self._getter = getter
+        # 既定でも実際に問い合わせる。ここを None のままにすると、
+        # Instagram が画像を取得し終える前に公開を投げてしまう。
+        self._getter = getter or http_get
         self._sleep = sleeper or time.sleep
 
     # ------------------------------------------------------------ 検査
@@ -206,8 +207,6 @@ class Publisher:
 
     def _await_container(self, container_id: str) -> None:
         """コンテナの処理完了を待つ。Instagram が画像を取得し終えるまで。"""
-        if self._getter is None:
-            return  # 状態を確認する手段がない場合はそのまま進む
         waited = 0
         while waited < CONTAINER_TIMEOUT_SECONDS:
             status = self._getter(

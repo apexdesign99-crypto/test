@@ -201,6 +201,17 @@ def test_コンテナIDが返らなければ止まる():
         publisher.publish("https://example.com/a.jpg", "本文", confirm=True)
 
 
+def test_既定でも画像の取得完了を待つ():
+    """テストが偽の getter を渡していたため、本番だけ待たずに公開する不具合があった。
+
+    完了前に publish を投げると失敗する。既定でも実際に問い合わせること。
+    """
+    from ai_employee.instagram_api import http_get
+
+    publisher = Publisher(Credentials(access_token="T"))
+    assert publisher._getter is http_get
+
+
 def test_トークンなしでは作れない():
     with pytest.raises(PublishError, match="アクセストークンが設定されていません"):
         Publisher(Credentials(access_token=""))

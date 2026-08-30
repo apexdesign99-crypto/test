@@ -130,8 +130,8 @@ def load_credentials(root: Path | None = None) -> Credentials | None:
     return None
 
 
-def _default_transport(url: str) -> dict[str, Any]:
-    """実際に HTTP を叩く。テストではここを差し替える。"""
+def http_get(url: str) -> dict[str, Any]:
+    """実際に GET を投げる。テストではここを差し替える。"""
     try:
         with urllib.request.urlopen(url, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -161,7 +161,7 @@ class InstagramClient:
         if not credentials.access_token:
             raise InstagramAPIError("アクセストークンが設定されていません")
         self.credentials = credentials
-        self._transport = transport or _default_transport
+        self._transport = transport or http_get
 
     def _get(self, path: str, **params: Any) -> dict[str, Any]:
         params["access_token"] = self.credentials.access_token
