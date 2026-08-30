@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .audit import CHECKS as AUDIT_CHECKS, audit as _audit
 from .billing import BILLING_STATUSES, with_tax
 from .company import (
     CHANNELS,
@@ -353,6 +354,9 @@ def build_tools(
 
     def plan_gaps(year_month: str) -> dict:
         return plan.gaps(year_month, office.instagram_cadence or None)
+
+    def run_audit(check: str | None = None) -> dict:
+        return _audit(workspace.root.parent, only=check)
 
     def record_land(
         project_id: str,
@@ -968,6 +972,25 @@ def build_tools(
             _obj({"year_month": {"type": "string", "description": "対象月 (例 2026-09)"}},
                  ["year_month"]),
             plan_gaps,
+        ),
+        Tool(
+            "run_audit",
+            "事務所のデータを機械的に点検し、指摘を重大度つきで返す。"
+            "資格情報の扱い、個人情報の置き場所、掲載許諾と発信記録の整合、"
+            "社員の権限、台帳の健全性を見る。"
+            "**これは安全性の保証ではない。** 指摘がゼロでも問題がないとは限らないので、"
+            "「問題ありません」「安全です」とは報告しないこと。",
+            _obj(
+                {
+                    "check": {
+                        "type": "string",
+                        "enum": list(AUDIT_CHECKS),
+                        "description": "特定の項目だけを点検する。省略時は全項目。",
+                    }
+                },
+                [],
+            ),
+            run_audit,
         ),
         Tool(
             "record_land",

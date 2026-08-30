@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .billing import totals
 from .company import STAGES, OfficeProfile, ProjectLedger
+from .audit import audit
 from .competitor import APPEAL_AXES, CompetitorLedger
 from .instagram_api import load_credentials, load_metrics
 from .instagram_plan import InstagramPlan
@@ -29,6 +30,7 @@ NAV = (
     ("/plan", "発信"),
     ("/billing", "請求"),
     ("/competitors", "競合"),
+    ("/audit", "点検"),
     ("/roster", "社員"),
 )
 
@@ -504,6 +506,35 @@ class Views:
             rows, "競合がまだ登録されていません"), len(records)))
         return "".join(blocks)
 
+    # --------------------------------------------------------------- 点検
+
+    def audit_view(self) -> str:
+        result = audit(self.root)
+        counts = result["by_severity"]
+        cards = "".join([
+            card("重大", f'{counts["高"]} 件', "alert" if counts["高"] else "ok"),
+            card("要確認", f'{counts["中"]} 件', "warn" if counts["中"] else "ok"),
+            card("把握", f'{counts["低"]} 件'),
+        ])
+        blocks = ["<h1>社内点検</h1>", f'<div class="cards">{cards}</div>']
+
+        if not result["count"]:
+            blocks.append('<p class="empty">今回の点検では指摘はありませんでした。</p>')
+        else:
+            tones = {"高": "alert", "中": "warn", "低": "muted"}
+            rows = [[
+                pill(f["severity"], tones[f["severity"]]),
+                esc(f["category"]), esc(f["where"]),
+                esc(f["detail"]) + f'<div class="note">→ {esc(f["action"])}</div>',
+            ] for f in result["findings"]]
+            blocks.append(section("指摘", table(
+                ["重大度", "種別", "場所", "内容と対処"], rows), result["count"],
+                "alert" if counts["高"] else "warn"))
+
+        blocks.append(f'<p class="basis">点検した項目: {esc("、".join(result["checked"]))}</p>')
+        blocks.append(f'<p class="caution">{esc(result["disclaimer"])}</p>')
+        return "".join(blocks)
+
     # --------------------------------------------------------------- 社員
 
     def roster_view(self) -> str:
@@ -644,6 +675,8 @@ def make_handler(root: Path) -> type[BaseHTTPRequestHandler]:
                     body, title, active = views.billing(), "請求", "/billing"
                 elif path == "/competitors":
                     body, title, active = views.competitors_view(), "競合", "/competitors"
+                elif path == "/audit":
+                    body, title, active = views.audit_view(), "点検", "/audit"
                 elif path == "/roster":
                     body, title, active = views.roster_view(), "社員", "/roster"
                 else:

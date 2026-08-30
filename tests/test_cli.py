@@ -79,10 +79,10 @@ def test_不正な職種は引数解析で弾かれる(tmp_path):
 def test_標準陣容を一括採用できる(tmp_path, capsys):
     assert run(["hire-team"], tmp_path) == 0
     out = capsys.readouterr().out
-    for employee_id in ("shukyaku", "eigyo", "marke", "jimu", "bim"):
+    for employee_id in ("shukyaku", "eigyo", "marke", "jimu", "security", "bim"):
         assert (tmp_path / employee_id / "profile.json").is_file()
         assert employee_id in out
-    assert "5 名を採用しました" in out
+    assert "6 名を採用しました" in out
 
 
 def test_一括採用は既存社員を飛ばす(tmp_path, capsys):
@@ -90,7 +90,7 @@ def test_一括採用は既存社員を飛ばす(tmp_path, capsys):
     assert run(["hire-team"], tmp_path) == 0
     out = capsys.readouterr().out
     assert "見送り" in out and "eigyo" in out
-    assert "4 名を採用しました" in out
+    assert "5 名を採用しました" in out
 
     saved = json.loads((tmp_path / "eigyo" / "profile.json").read_text(encoding="utf-8"))
     assert saved["name"] == "既存の営業"  # 上書きされていない
@@ -864,3 +864,53 @@ def test_未接続なら公開できない(tmp_path, capsys, monkeypatch):
     assert run(["publish", post["id"], "--image-url", "https://example.com/a.jpg"],
                tmp_path) == 1
     assert "接続していません" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- 社内点検
+
+
+def test_指摘がなければ安全だとは言わない(tmp_path, capsys):
+    run(["office", "--name", "A設計"], tmp_path)
+    capsys.readouterr()
+    assert run(["audit"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "今回の点検では指摘はありませんでした" in out
+    assert "安全性の保証ではない" in out
+    assert "問題ありません" not in out
+
+
+def test_重大な指摘があれば異常終了する(tmp_path, capsys):
+    """定期実行から検知できるように。"""
+    import json as _json
+
+    from ai_employee.company import ProjectLedger
+
+    run(["office", "--name", "A設計"], tmp_path)
+    ledger = ProjectLedger(tmp_path)
+    ledger.add("K様邸 新築")
+    data = _json.loads(ledger.path.read_text(encoding="utf-8"))
+    data[0]["publications"] = [{"at": "2026-08-01T10:00:00", "channel": "Instagram",
+                               "title": "完成しました", "url": "", "by": "marke"}]
+    ledger.path.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    capsys.readouterr()
+    assert run(["audit"], tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "[高] 掲載許諾" in out
+    assert "点検した項目" in out
+
+
+def test_項目を指定して点検できる(tmp_path, capsys):
+    run(["office", "--name", "A設計"], tmp_path)
+    capsys.readouterr()
+    assert run(["audit", "--check", "permissions"], tmp_path) == 0
+    assert "社員の権限" in capsys.readouterr().out
+
+
+def test_セキュリティ担当を採用できる(tmp_path, capsys):
+    assert run(["hire", "--id", "sec", "--name", "セキュリティ AI",
+                "--template", "security"], tmp_path) == 0
+    saved = json.loads((tmp_path / "sec" / "profile.json").read_text(encoding="utf-8"))
+    assert saved["role"] == "セキュリティ担当"
+    assert "run_audit" in saved["tools"]
+    assert saved["web_access"] is False

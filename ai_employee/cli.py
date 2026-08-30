@@ -29,6 +29,7 @@ from .company import (
     OfficeProfile,
     ProjectLedger,
 )
+from .audit import CHECKS as AUDIT_CHECKS, audit
 from .billing import BILLING_STATUSES, EXAMPLE_SCHEDULE
 from .competitor import APPEAL_AXES, COMPETITOR_TYPES, CompetitorError, CompetitorLedger
 from .copycheck import review_copy
@@ -426,6 +427,32 @@ def cmd_serve(args: argparse.Namespace) -> int:
     finally:
         httpd.server_close()
     return 0
+
+
+def cmd_audit(args: argparse.Namespace) -> int:
+    """事務所のデータを点検する。"""
+    result = audit(args.office, only=args.check)
+
+    if not result["count"]:
+        print(BOLD("今回の点検では指摘はありませんでした。"))
+    else:
+        counts = result["by_severity"]
+        summary = "  ".join(f"{level} {counts[level]} 件" for level in ("高", "中", "低")
+                            if counts[level])
+        print(BOLD(f"指摘 {result['count']} 件") + DIM(f"  ({summary})"))
+        print()
+        tone = {"高": RED, "中": CYAN, "低": DIM}
+        for finding in result["findings"]:
+            mark = tone[finding["severity"]]
+            print(mark(f"  [{finding['severity']}] {finding['category']}")
+                  + f"  {finding['where']}")
+            print(f"      {finding['detail']}")
+            print(DIM(f"      → {finding['action']}"))
+
+    print(DIM(f"\n  点検した項目: {'、'.join(result['checked'])}"))
+    print(DIM(f"  ※ {result['disclaimer']}"))
+    # 重大な指摘があるときだけ異常終了(定期実行から検知できるように)
+    return 1 if result["by_severity"]["高"] else 0
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -1432,6 +1459,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser", action="store_true", help="ブラウザを自動で開かない"
     )
     p_serve.set_defaults(func=cmd_serve)
+
+    p_audit = sub.add_parser("audit", help="事務所のデータを点検する(セキュリティ担当が使う)")
+    p_audit.add_argument(
+        "--check", choices=list(AUDIT_CHECKS), help="特定の項目だけを点検する",
+    )
+    p_audit.set_defaults(func=cmd_audit)
 
     p_doctor = sub.add_parser(
         "doctor", help="初回実行の前に、足りないものと次の一手を確認する"

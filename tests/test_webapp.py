@@ -310,3 +310,35 @@ def test_期限切れの警告が画面に出る(office_root):
         expires_at=(now() - timedelta(days=1)).isoformat(timespec="seconds"),
     ), office_root)
     assert "有効期限が切れています" in Views(office_root).plan_view("2026-09")
+
+
+def test_点検画面に指摘と免責が出る(office_root):
+    import json as _json
+
+    from ai_employee.company import ProjectLedger
+
+    ledger = ProjectLedger(office_root)
+    project = ledger.list(query="K様邸")[0]
+    data = _json.loads(ledger.path.read_text(encoding="utf-8"))
+    for record in data:
+        if record["id"] == project["id"]:
+            record["consent"] = {"status": "未確認", "conditions": ""}
+            record["publications"] = [{"at": "2026-08-01T10:00:00",
+                                       "channel": "Instagram", "title": "完成",
+                                       "url": "", "by": "marke"}]
+    ledger.path.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    html = Views(office_root).audit_view()
+    assert "社内点検" in html
+    assert "掲載許諾" in html
+    assert "安全性の保証ではない" in html
+    assert "点検した項目" in html
+
+
+def test_指摘がなくても安全だとは書かない(tmp_path):
+    from ai_employee.company import OfficeProfile
+
+    OfficeProfile(name="A設計").save(tmp_path)
+    html = Views(tmp_path).audit_view()
+    assert "今回の点検では指摘はありませんでした" in html
+    assert "安全性の保証ではない" in html
