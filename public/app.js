@@ -17,6 +17,8 @@ const els = {
   voice: $("voice"),
   rate: $("rate"),
   rateOut: $("rate-out"),
+  endpoint: $("endpoint"),
+  endpointOut: $("endpoint-out"),
   handsfree: $("handsfree"),
   speak: $("speak"),
 };
@@ -59,6 +61,7 @@ const settings = {
   rate: 1,
   handsfree: false,
   speak: true,
+  endpointMs: 700,
   ...loadSettings(),
 };
 
@@ -145,9 +148,17 @@ const tts = {
     if (taken > 0) this.buffer = this.buffer.slice(taken);
 
     // 句点が来ないまま長くなったら読点で区切る（無音の間を作らないため）。
-    if (this.buffer.length > 90) {
-      const comma = Math.max(this.buffer.lastIndexOf("、"), this.buffer.lastIndexOf(","));
-      if (comma > 20) {
+    // まだ一言も喋り出していない間はしきい値を下げ、返答の出だしを早める。
+    const speaking = this.current !== null || this.queue.length > 0;
+    const limit = speaking ? 90 : 32;
+    const minChunk = speaking ? 20 : 8;
+    if (this.buffer.length > limit) {
+      const comma = Math.max(
+        this.buffer.lastIndexOf("、"),
+        this.buffer.lastIndexOf("，"),
+        this.buffer.lastIndexOf(","),
+      );
+      if (comma > minChunk) {
         this.enqueue(this.buffer.slice(0, comma + 1));
         this.buffer = this.buffer.slice(comma + 1);
       }
@@ -243,25 +254,101 @@ function fillVoiceList() {
 
 // ---------------------------------------------------------------- 音声認識
 
+// ブラウザ任せの「話し終わり」判定は 1〜2 秒待つので、こちらで無音を計って送る。
+// continuous = true にしてマイクを開けたままにし、無音が endpointMs 続いたら
+// その時点の確定テキストを送信する。確定がまだなら stop() で確定を促す
+// （stop() は認識エンジンに即座に結果を出させるので、放置より速い）。
+
 const SpeechRecognitionCtor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
 let recognition = null;
 let interimBubble = null;
 let finalTranscript = "";
+let interimText = "";
+let silenceTimer = null;
+let idleTimer = null;
+let dispatched = false;
+
+/** 一度も声が届かないままマイクが開き続けるのを防ぐ。 */
+const IDLE_CLOSE_MS = 15000;
+
+function clearSilenceTimer() {
+  clearTimeout(silenceTimer);
+  silenceTimer = null;
+}
+
+function clearIdleTimer() {
+  clearTimeout(idleTimer);
+  idleTimer = null;
+}
+
+/** 発話が届くたびに無音タイマーを引き直す。 */
+function armSilenceTimer() {
+  clearSilenceTimer();
+  silenceTimer = setTimeout(() => {
+    if (finalTranscript.trim()) {
+      dispatchTurn();
+    } else if (interimText.trim() && recognition && listening) {
+      // 認識中の文字はあるが確定していない → 確定を促す
+      try {
+        recognition.stop();
+      } catch {
+        // 停止済みなら何もしなくてよい
+      }
+    }
+  }, settings.endpointMs);
+}
+
+/** マイクを閉じてから送る（自分の読み上げを拾わないため）。 */
+function dispatchTurn() {
+  if (dispatched) return;
+  const text = finalTranscript.trim();
+  if (!text) return;
+
+  dispatched = true;
+  clearSilenceTimer();
+  finalTranscript = "";
+  interimText = "";
+  interimBubble?.remove();
+  interimBubble = null;
+
+  if (recognition && listening) {
+    try {
+      recognition.abort(); // stop() より速く閉じる
+    } catch {
+      // 失敗しても送信は続ける
+    }
+  }
+  sendTurn(text);
+}
 
 function buildRecognition() {
   if (!SpeechRecognitionCtor) return null;
   const rec = new SpeechRecognitionCtor();
   rec.lang = settings.lang;
   rec.interimResults = true;
-  rec.continuous = false;
   rec.maxAlternatives = 1;
+  try {
+    // 対応していないブラウザでは false のまま。onend 側の経路で送られる。
+    rec.continuous = true;
+  } catch {
+    // 設定できなければ既定のまま使う
+  }
 
   rec.onstart = () => {
     listening = true;
+    dispatched = false;
     finalTranscript = "";
+    interimText = "";
+    clearIdleTimer();
+    idleTimer = setTimeout(stopListening, IDLE_CLOSE_MS);
     els.mic.setAttribute("aria-pressed", "true");
     els.micLabel.textContent = t().stop;
     setStatus("listening");
+  };
+
+  rec.onspeechend = () => {
+    // エンジンが話し終わりを検知したら、無音タイマーを待たずに確定へ進む
+    if (finalTranscript.trim()) dispatchTurn();
   };
 
   rec.onresult = (event) => {
@@ -271,6 +358,9 @@ function buildRecognition() {
       if (result.isFinal) finalTranscript += result[0].transcript;
       else interim += result[0].transcript;
     }
+    interimText = interim;
+    clearIdleTimer();
+
     const preview = (finalTranscript + interim).trim();
     if (preview) {
       if (!interimBubble) interimBubble = addTurn("user", preview, "interim");
@@ -279,6 +369,9 @@ function buildRecognition() {
         scrollToEnd();
       }
     }
+
+    // 確定が来ていて、続きの発話が無ければタイマー満了で送られる
+    armSilenceTimer();
   };
 
   rec.onerror = (event) => {
@@ -289,15 +382,16 @@ function buildRecognition() {
 
   rec.onend = () => {
     listening = false;
+    clearSilenceTimer();
+    clearIdleTimer();
     els.mic.setAttribute("aria-pressed", "false");
     els.micLabel.textContent = t().talk;
     interimBubble?.remove();
     interimBubble = null;
 
-    const text = finalTranscript.trim();
-    finalTranscript = "";
-    if (text) sendTurn(text);
-    else if (!sending) setStatus("idle");
+    // タイマー経路で送れなかったぶんの受け皿（continuous 非対応ブラウザもここを通る）
+    if (finalTranscript.trim()) dispatchTurn();
+    else if (!sending && !dispatched) setStatus("idle");
   };
 
   return rec;
@@ -316,6 +410,8 @@ function startListening() {
 }
 
 function stopListening() {
+  clearSilenceTimer();
+  clearIdleTimer();
   if (recognition && listening) recognition.stop();
 }
 
@@ -466,6 +562,12 @@ els.voice.addEventListener("change", () => {
   saveSettings();
 });
 
+els.endpoint.addEventListener("input", () => {
+  settings.endpointMs = Math.round(Number(els.endpoint.value) * 1000);
+  els.endpointOut.textContent = (settings.endpointMs / 1000).toFixed(1);
+  saveSettings();
+});
+
 els.rate.addEventListener("input", () => {
   settings.rate = Number(els.rate.value);
   els.rateOut.textContent = settings.rate.toFixed(1);
@@ -494,6 +596,8 @@ document.addEventListener("keydown", (event) => {
 els.lang.value = settings.lang;
 els.rate.value = String(settings.rate);
 els.rateOut.textContent = Number(settings.rate).toFixed(1);
+els.endpoint.value = String(settings.endpointMs / 1000);
+els.endpointOut.textContent = (settings.endpointMs / 1000).toFixed(1);
 els.handsfree.checked = settings.handsfree;
 els.speak.checked = settings.speak;
 
