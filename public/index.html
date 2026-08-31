@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>音声会話 — Claude と話す</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🎙️</text></svg>" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>音声会話</h1>
+      <p id="status" class="status" data-state="idle">待機中</p>
+      <button id="reset" class="ghost" type="button">会話をリセット</button>
+    </header>
+
+    <p id="notice" class="notice" hidden></p>
+
+    <main id="log" class="log" aria-live="polite" aria-label="会話の記録"></main>
+
+    <section class="controls">
+      <button id="mic" class="mic" type="button" aria-pressed="false">
+        <span class="mic-icon" aria-hidden="true"></span>
+        <span id="mic-label">話す</span>
+      </button>
+
+      <form id="text-form" class="text-form">
+        <input
+          id="text-input"
+          type="text"
+          autocomplete="off"
+          placeholder="キーボードで入力して送る"
+          aria-label="テキストで送る"
+        />
+        <button type="submit">送信</button>
+      </form>
+
+      <details class="settings">
+        <summary>設定</summary>
+        <div class="settings-grid">
+          <label>
+            言語
+            <select id="lang">
+              <option value="ja-JP">日本語</option>
+              <option value="en-US">English</option>
+            </select>
+          </label>
+
+          <label>
+            読み上げの声
+            <select id="voice"></select>
+          </label>
+
+          <label>
+            読み上げ速度 <output id="rate-out">1.0</output>
+            <input id="rate" type="range" min="0.6" max="1.6" step="0.1" value="1.0" />
+          </label>
+
+          <label class="check">
+            <input id="handsfree" type="checkbox" />
+            ハンズフリー（返答後に自動でマイクを開く）
+          </label>
+
+          <label class="check">
+            <input id="speak" type="checkbox" checked />
+            返答を読み上げる
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
