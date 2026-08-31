@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-音声会話アプリ。ブラウザの Web Speech API で音声認識・読み上げを行い、Node/TypeScript のサーバー経由で Claude API を呼ぶ。
+音声会話アプリ。ブラウザの Web Speech API で音声認識・読み上げを行い、Hono (Node) のサーバー経由で Claude API を呼ぶ。
 
 ## コマンド
 
@@ -24,7 +24,7 @@ npm run typecheck   # tsc --noEmit
 
 ```
 public/app.js   音声認識 → history に push → POST /api/chat
-src/server.ts   検証 → streamReply() → SSE (delta / done / error)
+src/server.ts   検証 → streamReply() → streamSSE (delta / done / error)
 src/claude.ts   client.beta.messages.stream() → text_delta を yield
 public/app.js   吹き出しに追記 + 文単位で読み上げキューへ → 読み上げ完了でハンズフリー再開
 ```
@@ -41,6 +41,14 @@ public/app.js   吹き出しに追記 + 文単位で読み上げキューへ →
   `sending = false` より先に `onDrain` を登録すること（最後の発話が先に終わると取りこぼす）。
 - **音声認識は `continuous = false`。** 発話が途切れると `onend` が発火し、そこで送信する。送信前にマイクを閉じるのは
   自分の読み上げを拾わないため。
+
+`src/server.ts` は Hono + `@hono/node-server`。ここで気をつける点:
+
+- `streamSSE()` の `stream.onAbort()` でブラウザの切断を拾い、`AbortController` 経由で Claude 呼び出しごと止める。
+- ルートは登録順に照合される。`app.post("/api/chat")` の後ろに `app.all("/api/chat")` を置いて 405 を返している。
+  この 2 つを入れ替えると POST も 405 になる。
+- `serveStatic({ root })` の root は絶対パス（`import.meta.url` から算出）。相対パスにすると起動時の
+  カレントディレクトリに依存する。パストラバーサルは serveStatic 側で弾かれる。
 
 ## 環境変数と API の作法
 

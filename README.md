@@ -61,7 +61,7 @@ npm start
 
 | ファイル | 役割 |
 | --- | --- |
-| `src/server.ts` | 静的ファイル配信と `POST /api/chat`（SSE で返答を流す） |
+| `src/server.ts` | Hono 製。静的ファイル配信と `POST /api/chat`（SSE で返答を流す） |
 | `src/claude.ts` | Claude API 呼び出しと、読み上げ向けのシステムプロンプト |
 | `src/config.ts` | 環境変数の読み取り |
 | `public/app.js` | 音声認識 → 送信 → 読み上げのループ |
