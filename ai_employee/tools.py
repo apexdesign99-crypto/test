@@ -35,6 +35,7 @@ from .instagram import (
     post_format as _post_format,
 )
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError
+from .plans import PlanError, search_similar as _search_plans, stats as _plan_stats
 from .workspace import Workspace, WorkspaceError, now
 
 # Opus 4.6 以降で使えるサーバ側 Web 検索ツール。
@@ -357,6 +358,25 @@ def build_tools(
 
     def run_audit(check: str | None = None) -> dict:
         return _audit(workspace.root.parent, only=check)
+
+    def search_plans(
+        敷地面積坪: float | None = None,
+        間口m: float | None = None,
+        延床面積坪: float | None = None,
+        前面道路方向: str | None = None,
+        敷地形状: str | None = None,
+        階数: str | None = None,
+        家族人数: int | None = None,
+        limit: int = 3,
+    ) -> dict:
+        return _search_plans({
+            "敷地面積坪": 敷地面積坪, "間口m": 間口m, "延床面積坪": 延床面積坪,
+            "前面道路方向": 前面道路方向, "敷地形状": 敷地形状,
+            "階数": 階数, "家族人数": 家族人数,
+        }, limit=limit)
+
+    def plan_database_stats() -> dict:
+        return _plan_stats()
 
     def record_land(
         project_id: str,
@@ -991,6 +1011,47 @@ def build_tools(
                 [],
             ),
             run_audit,
+        ),
+        Tool(
+            "search_plans",
+            "過去の住宅プランのデータベースから、敷地条件に近い事例を探す。"
+            "プラン提案の前に、似た条件で過去にどう解いたかを確認すること。"
+            "**似た事例があることは、その敷地でその案が成立することを意味しない。**"
+            "法規・地盤・予算・施主の要望は別途確認が必要である旨を必ず添えること。",
+            _obj(
+                {
+                    "敷地面積坪": {"type": "number", "description": "敷地面積(坪)"},
+                    "間口m": {"type": "number", "description": "間口(m)"},
+                    "延床面積坪": {"type": "number", "description": "希望延床面積(坪)"},
+                    "前面道路方向": {
+                        "type": "string",
+                        "enum": ["北", "北東", "東", "南東", "南", "南西", "西", "北西"],
+                        "description": "前面道路の方向",
+                    },
+                    "敷地形状": {
+                        "type": "string",
+                        "enum": ["長方形", "正方形", "旗竿", "台形", "L字", "不整形"],
+                        "description": "敷地の形",
+                    },
+                    "階数": {
+                        "type": "string",
+                        "enum": ["平屋", "2階", "3階"],
+                        "description": "階数",
+                    },
+                    "家族人数": {"type": "integer", "description": "家族人数"},
+                    "limit": {"type": "integer", "description": "件数(既定 3)"},
+                },
+                [],
+            ),
+            search_plans,
+        ),
+        Tool(
+            "plan_database_stats",
+            "過去プランのデータベースに何件登録され、どの項目が埋まっているかを返す。"
+            "検索の精度は埋まり具合に左右されるので、"
+            "事例を語る前に母数を確認すること。",
+            _obj({}, []),
+            plan_database_stats,
         ),
         Tool(
             "record_land",

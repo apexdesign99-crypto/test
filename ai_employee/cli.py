@@ -36,6 +36,7 @@ from .copycheck import review_copy
 from .instagram import POST_FORMATS, THEMES, InstagramError
 from .instagram_api import InstagramAPIError
 from .instagram_publish import PublishError
+from .plans import DEFAULT_DB, PlanError as PlanDbError, search_similar, stats as plan_stats
 from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
@@ -1056,6 +1057,64 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plans(args: argparse.Namespace) -> int:
+    """過去プランのデータベースを見る・検索する。"""
+    source = Path(args.database) if args.database else DEFAULT_DB
+
+    if args.stats or not any((args.site_area, args.frontage, args.floor_area,
+                              args.road, args.shape, args.floors, args.family)):
+        result = plan_stats(source)
+        print(BOLD(f"登録プラン {result['total']} 件") + DIM(f"  ({source})"))
+        if not result["total"]:
+            print()
+            print(DIM(f"  {result['note']}"))
+            return 0
+        print()
+        print(BOLD("  項目の埋まり具合") + DIM("(類似検索の精度に効きます)"))
+        for key, rate in list(result["coverage"].items())[:15]:
+            bar = MARK["bar"] * max(1, round(rate / 10))
+            print(f"    {_pad(key, 18)}{rate:>4}%  {CYAN(bar)}")
+        if result["sparse_fields"]:
+            print(DIM(f"\n  半分以下しか埋まっていない項目: "
+                      f"{'、'.join(result['sparse_fields'][:10])}"))
+        print(DIM(f"\n  {result['note']}"))
+        return 0
+
+    criteria = {
+        "敷地面積坪": args.site_area, "間口m": args.frontage,
+        "延床面積坪": args.floor_area, "前面道路方向": args.road,
+        "敷地形状": args.shape, "階数": args.floors, "家族人数": args.family,
+    }
+    result = search_similar(criteria, limit=args.limit, path=source)
+
+    shown = "、".join(f"{k} {v}" for k, v in result["criteria"].items())
+    print(BOLD(f"条件に近い過去プラン") + DIM(f"  {shown}"))
+    print(DIM(f"  全 {result['total_plans']} 件中、比較できたのは "
+              f"{result['comparable']} 件"))
+    print()
+    if not result["results"]:
+        print(DIM("  比較できるプランがありません。"
+                  "指定した項目が登録されていない可能性があります。"))
+        return 0
+
+    for item in result["results"]:
+        fields = item["fields"]
+        print(BOLD(f"  {item['plan_id']}") + f"  類似度 {item['similarity']}%")
+        summary = "  ".join(filter(None, [
+            f"敷地 {fields['敷地面積坪']}坪" if fields.get("敷地面積坪") else "",
+            f"延床 {fields['延床面積坪']}坪" if fields.get("延床面積坪") else "",
+            f"間口 {fields['間口m']}m" if fields.get("間口m") else "",
+            f"{fields['前面道路方向']}道路" if fields.get("前面道路方向") else "",
+            str(fields.get("階数") or ""),
+            f"家族{fields['家族人数']}人" if fields.get("家族人数") else "",
+        ]))
+        print(f"      {summary}")
+        if item["matched_on"]:
+            print(DIM(f"      一致した項目: {'、'.join(item['matched_on'])}"))
+    print(DIM(f"\n  ※ {result['caveat']}"))
+    return 0
+
+
 def cmd_land(args: argparse.Namespace) -> int:
     """土地診断。案件に記録された条件、または直接指定した条件で診断する。"""
     office = OfficeProfile.load(args.office)
@@ -1570,6 +1629,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan.add_argument("--mixes", action="store_true", help="配分の選択肢を一覧する")
     p_plan.set_defaults(func=cmd_plan)
 
+    p_plans = sub.add_parser("plans", help="過去プランのデータベースを見る・検索する")
+    p_plans.add_argument("--database", help=f"ファイルの場所(既定 {DEFAULT_DB})")
+    p_plans.add_argument("--stats", action="store_true", help="登録状況だけを表示する")
+    p_plans.add_argument("--site-area", dest="site_area", type=float, help="敷地面積(坪)")
+    p_plans.add_argument("--frontage", type=float, help="間口(m)")
+    p_plans.add_argument("--floor-area", dest="floor_area", type=float, help="延床面積(坪)")
+    p_plans.add_argument(
+        "--road", choices=["北", "北東", "東", "南東", "南", "南西", "西", "北西"],
+        help="前面道路の方向")
+    p_plans.add_argument(
+        "--shape", choices=["長方形", "正方形", "旗竿", "台形", "L字", "不整形"],
+        help="敷地形状")
+    p_plans.add_argument("--floors", choices=["平屋", "2階", "3階"], help="階数")
+    p_plans.add_argument("--family", type=int, help="家族人数")
+    p_plans.add_argument("--limit", type=int, default=3, help="件数(既定 3)")
+    p_plans.set_defaults(func=cmd_plans)
+
     p_land = sub.add_parser(
         "land", help="土地診断(建てられるボリュームの目安と、確認すべき論点)"
     )
@@ -1719,7 +1795,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except (WorkspaceError, CompanyError, LandError, CompetitorError,
-            InstagramError, PlanError, InstagramAPIError, PublishError) as exc:
+            InstagramError, PlanError, InstagramAPIError, PublishError,
+            PlanDbError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:
