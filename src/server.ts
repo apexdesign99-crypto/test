@@ -6,8 +6,20 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
-import { config } from "./config.js";
+import { authRequired, config, security } from "./config.js";
 import { streamReply, type ChatLang, type ChatTurn } from "./claude.js";
+import {
+  acquireStreamSlot,
+  assertSafeBinding,
+  handleLogin,
+  handleLogout,
+  logAccess,
+  originGuard,
+  rateLimit,
+  requireAuth,
+  securityHeaders,
+  sessionState,
+} from "./security.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // 起動時のカレントディレクトリに依存しないよう絶対パスで渡す。
@@ -65,10 +77,20 @@ function describeError(error: unknown): string {
 
 const app = new Hono();
 
+app.use("/*", securityHeaders());
+
 app.get("/api/health", (c) => c.json({ ok: true, model: config.model, effort: config.effort }));
+
+app.get("/api/session", (c) => c.json(sessionState(c)));
+
+app.post("/api/login", originGuard(), rateLimit(security.loginPerMinute, "login"), handleLogin);
+app.post("/api/logout", originGuard(), (c) => handleLogout(c));
 
 app.post(
   "/api/chat",
+  originGuard(),
+  requireAuth(),
+  rateLimit(security.chatPerMinute, "chat"),
   bodyLimit({
     maxSize: 256 * 1024,
     onError: (c) => c.json({ error: "リクエストが大きすぎます" }, 413),
@@ -82,8 +104,15 @@ app.post(
       return c.json({ error: message }, 400);
     }
 
+    const releaseSlot = acquireStreamSlot(c);
+    if (!releaseSlot) {
+      logAccess(c, "stream_limit");
+      return c.json({ error: "同時に処理できる会話数を超えました。少し待ってからお試しください。" }, 429);
+    }
+
     c.header("X-Accel-Buffering", "no"); // リバースプロキシに束ねさせない
 
+    const startedAt = Date.now();
     return streamSSE(c, async (stream) => {
       // ブラウザが読み込みを中断したら Claude への呼び出しも止める（言い直し・バージイン対策）。
       const controller = new AbortController();
@@ -101,10 +130,17 @@ app.post(
             });
           }
         }
+        logAccess(c, "chat_ok", { turns: request.messages.length, ms: Date.now() - startedAt });
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) {
+          logAccess(c, "chat_aborted", { ms: Date.now() - startedAt });
+          return;
+        }
         console.error("[chat]", error);
+        logAccess(c, "chat_error", { ms: Date.now() - startedAt });
         await stream.writeSSE({ event: "error", data: JSON.stringify({ message: describeError(error) }) });
+      } finally {
+        releaseSlot();
       }
     });
   },
@@ -116,10 +152,17 @@ app.use("/*", serveStatic({ root: publicDir }));
 
 app.notFound((c) => c.json({ error: "not found" }, 404));
 
+assertSafeBinding();
+
 if (!process.env["ANTHROPIC_API_KEY"] && !process.env["ANTHROPIC_AUTH_TOKEN"]) {
   console.warn("[warn] ANTHROPIC_API_KEY が未設定です。.env に設定するか、ant auth login のプロファイルを使ってください。");
 }
 
 serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
   console.log(`音声会話サーバー: http://${config.host}:${info.port}  (model: ${config.model}, effort: ${config.effort})`);
+  console.log(
+    authRequired
+      ? "  認証: アクセストークンによるログインが必要です"
+      : "  認証: なし（ループバック専用。外部に出す場合は VOICE_ACCESS_TOKEN を設定してください）",
+  );
 });

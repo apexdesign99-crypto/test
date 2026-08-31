@@ -37,3 +37,38 @@ export const config = {
   /** 1 発話あたりの文字数上限。 */
   maxMessageChars: envInt("MAX_MESSAGE_CHARS", 4000),
 } as const;
+
+/** セキュリティ関連の設定。既定はローカル 1 人用（認証なし・緩めの制限）。 */
+export const security = {
+  /**
+   * 設定するとアクセストークンによるログインが必須になる。
+   * 空のままなら認証なし（ループバックに閉じている前提）。
+   */
+  accessToken: process.env["VOICE_ACCESS_TOKEN"] ?? "",
+
+  /** ブラウザからの POST で許可する Origin。空なら Host と一致するものだけ許可。 */
+  allowedOrigins: (process.env["VOICE_ALLOWED_ORIGINS"] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+
+  /** リバースプロキシ配下で X-Forwarded-For / -Proto を信用する。直接公開時は 0 のまま。 */
+  trustProxy: process.env["VOICE_TRUST_PROXY"] === "1",
+
+  /** 1 分あたりの会話リクエスト数（クライアント単位）。 */
+  chatPerMinute: envInt("VOICE_RATE_LIMIT_PER_MIN", 20),
+
+  /** ログイン試行の 1 分あたり上限（IP 単位）。 */
+  loginPerMinute: envInt("VOICE_LOGIN_RATE_LIMIT_PER_MIN", 5),
+
+  /** 同時に走らせてよいストリーム数（クライアント単位）。 */
+  maxConcurrentStreams: envInt("VOICE_MAX_CONCURRENT_STREAMS", 2),
+
+  /** ログインセッションの有効期間（時間）。 */
+  sessionTtlHours: envInt("VOICE_SESSION_TTL_HOURS", 12),
+
+  /** ループバック以外に bind しつつ認証なしで起動することを許す（非推奨）。 */
+  allowInsecureBind: process.env["VOICE_ALLOW_INSECURE"] === "1",
+} as const;
+
+export const authRequired = security.accessToken !== "";

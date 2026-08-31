@@ -59,6 +59,20 @@ public/app.js   吹き出しに追記 + 文単位で読み上げキューへ →
   `src/claude.ts` はこの 400 を検知したら以後フォールバック指定を外して再試行する（`fallbackSupported`）。
 - エラー文言は SDK の型付き例外（`Anthropic.AuthenticationError` など）で分岐する。文字列マッチはしない。
 
+## セキュリティ層
+
+防御は `src/security.ts` に集約してある。ルートに足すときは `originGuard()` → `requireAuth()` →
+`rateLimit()` の順に並べる（Origin を弾いてから認証、最後に流量制御）。
+
+- **既定はローカル 1 人用**（認証なし）。`VOICE_ACCESS_TOKEN` を設定すると `authRequired` が立ち、
+  ログイン必須になる。`assertSafeBinding()` が、ループバック以外に bind × 認証なしの組み合わせで起動を止める。
+- **CSP はインライン JS / CSS を禁止**している。`public/` に `<script>` の中身や `style=""` を書くと動かなくなる。
+  favicon の data: URI のために `img-src` だけ緩めてある。
+- **レート制限とセッションはプロセス内メモリ。** 複数プロセスに分散させるなら共有ストアが要る。
+- **ログに発話内容を入れない。** `logAccess()` は時刻・IP・パス・結果だけを出す。ここに `content` を
+  足すと、会話の中身がサーバーのログに残る。
+- アクセストークンの比較は `sameSecret()`（SHA-256 → `timingSafeEqual`）を使う。`===` で比較しない。
+
 ## ブラウザ側の前提
 
 - マイクは `https://` か `localhost` でのみ使える。

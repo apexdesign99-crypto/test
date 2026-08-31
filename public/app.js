@@ -377,6 +377,10 @@ async function sendTurn(text) {
       signal: inFlight.signal,
     });
 
+    if (response.status === 401) {
+      location.replace("/login.html");
+      return;
+    }
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error ?? `サーバーエラー (${response.status})`);
@@ -495,6 +499,26 @@ els.speak.checked = settings.speak;
 
 renderEmpty();
 setStatus("idle");
+
+// ログインが要る設定なら、未ログインのうちに画面を出さずログインへ送る。
+try {
+  const state = await (await fetch("/api/session")).json();
+  if (state.authRequired && !state.authenticated) {
+    location.replace("/login.html");
+  } else if (state.authRequired) {
+    const logout = document.createElement("button");
+    logout.type = "button";
+    logout.className = "ghost";
+    logout.textContent = "ログアウト";
+    logout.addEventListener("click", async () => {
+      await fetch("/api/logout", { method: "POST" }).catch(() => {});
+      location.replace("/login.html");
+    });
+    els.reset.after(logout);
+  }
+} catch {
+  // セッション状態が取れなくても、送信時に 401 で気付ける
+}
 
 if (synth) {
   fillVoiceList();
