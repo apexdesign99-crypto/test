@@ -75,6 +75,31 @@ API キーはサーバー側だけが持ち、ブラウザには渡りません�
 Claude の返答が安全上の理由で拒否された場合は、同じ呼び出しの中でサーバー側の既定のフォールバックモデルが
 引き継ぎます（`fallbacks: "default"`）。この指定が受け付けられない環境では、自動的に外して再試行します。
 
+## ブラウザ以外から使う（iOS ショートカット等）
+
+`/api/chat` は SSE（少しずつ流れてくる形式）で返すため、ブラウザ以外のクライアントには不向きです。
+その代わりに `POST /api/say` があります。会話履歴を持たない単発のやり取りで、返答をプレーンテキストで
+一度に返します。
+
+```bash
+curl -X POST http://<ホスト>:3000/api/say \
+  -H 'content-type: application/json' \
+  -d '{"text":"こんにちは"}'
+```
+
+`VOICE_ACCESS_TOKEN` を設定している場合は、Cookie の代わりに `Authorization: Bearer <トークン>` を使います。
+
+```bash
+curl -X POST http://<ホスト>:3000/api/say \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer '"$VOICE_ACCESS_TOKEN" \
+  -d '{"text":"こんにちは"}'
+```
+
+iOS ショートカットなら「URL の内容を取得」を **POST**・本文を **JSON**（キー `text`）にし、
+`Authorization` ヘッダーにトークンを設定します。返ってきたテキストをそのまま「テキストを読み上げる」に
+渡せます。
+
 ## セキュリティ
 
 既定はローカル 1 人用（`127.0.0.1` のみで待ち受け、認証なし）です。それ以外の使い方をするときは

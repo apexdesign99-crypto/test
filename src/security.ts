@@ -53,6 +53,13 @@ function sameSecret(a: string, b: string): boolean {
   return timingSafeEqual(left, right);
 }
 
+/** `Authorization: Bearer <token>` からトークンを取り出す。Cookie を持てないクライアント（iOS ショートカット等）向け。 */
+function bearerToken(c: Context): string | undefined {
+  const header = c.req.header("authorization");
+  const match = header ? /^Bearer\s+(.+)$/i.exec(header) : null;
+  return match?.[1];
+}
+
 // -------------------------------------------------------------- 接続元
 
 function isHttps(c: Context): boolean {
@@ -218,6 +225,8 @@ export function requireAuth(): MiddlewareHandler {
   return async (c, next) => {
     if (!authRequired) return next();
     if (sessionAlive(getCookie(c, SESSION_COOKIE))) return next();
+    const token = bearerToken(c);
+    if (token && sameSecret(token, security.accessToken)) return next();
     logAccess(c, "unauthorized");
     return c.json({ error: "ログインが必要です", authRequired: true }, 401);
   };

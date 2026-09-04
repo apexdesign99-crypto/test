@@ -59,6 +59,20 @@ function parseChatRequest(body: unknown): { messages: ChatTurn[]; lang: ChatLang
   return { messages: turns, lang: lang === "en" ? "en" : "ja" };
 }
 
+function parseSayRequest(body: unknown): { text: string; lang: ChatLang } {
+  if (typeof body !== "object" || body === null) throw new BadRequest("オブジェクトを送ってください");
+
+  const { text, lang } = body as { text?: unknown; lang?: unknown };
+  if (typeof text !== "string" || text.trim() === "") {
+    throw new BadRequest("text が空です");
+  }
+  if (text.length > config.maxMessageChars) {
+    throw new BadRequest("text が長すぎます");
+  }
+
+  return { text: text.trim(), lang: lang === "en" ? "en" : "ja" };
+}
+
 function describeError(error: unknown): string {
   if (error instanceof Anthropic.AuthenticationError) {
     return "API キーが受け付けられませんでした。ANTHROPIC_API_KEY を確認してください。";
@@ -147,6 +161,60 @@ app.post(
 );
 
 app.all("/api/chat", (c) => c.json({ error: "POST を使ってください" }, 405));
+
+/**
+ * ブラウザ以外（iOS ショートカット等）向けの単発エンドポイント。
+ * POST 1 回・会話履歴なし・プレーンテキストで返す。SSE を読めないクライアント用。
+ * 認証を有効にしている場合は Cookie の代わりに `Authorization: Bearer <token>` を使う。
+ */
+app.post(
+  "/api/say",
+  originGuard(),
+  requireAuth(),
+  rateLimit(security.chatPerMinute, "chat"),
+  bodyLimit({
+    maxSize: 8 * 1024,
+    onError: (c) => c.text("リクエストが大きすぎます", 413),
+  }),
+  async (c) => {
+    let request: { text: string; lang: ChatLang };
+    try {
+      request = parseSayRequest(await c.req.json());
+    } catch (error) {
+      const message = error instanceof BadRequest ? error.message : "リクエストを読み取れませんでした";
+      return c.text(message, 400);
+    }
+
+    const releaseSlot = acquireStreamSlot(c);
+    if (!releaseSlot) {
+      logAccess(c, "stream_limit");
+      return c.text("同時に処理できる会話数を超えました。少し待ってからお試しください。", 429);
+    }
+
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    try {
+      let reply = "";
+      for await (const chunk of streamReply({
+        messages: [{ role: "user", content: request.text }],
+        lang: request.lang,
+        signal: controller.signal,
+      })) {
+        if (chunk.type === "delta") reply += chunk.text;
+      }
+      logAccess(c, "say_ok", { ms: Date.now() - startedAt });
+      return c.text(reply.trim() || "うまく聞き取れませんでした。");
+    } catch (error) {
+      console.error("[say]", error);
+      logAccess(c, "say_error", { ms: Date.now() - startedAt });
+      return c.text(describeError(error), 502);
+    } finally {
+      releaseSlot();
+    }
+  },
+);
+
+app.all("/api/say", (c) => c.text("POST を使ってください", 405));
 
 app.use("/*", serveStatic({ root: publicDir }));
 

@@ -77,6 +77,16 @@ public/app.js   吹き出しに追記 + 文単位で読み上げキューへ →
 - **ログに発話内容を入れない。** `logAccess()` は時刻・IP・パス・結果だけを出す。ここに `content` を
   足すと、会話の中身がサーバーのログに残る。
 - アクセストークンの比較は `sameSecret()`（SHA-256 → `timingSafeEqual`）を使う。`===` で比較しない。
+- `requireAuth()` は Cookie セッションに加えて `Authorization: Bearer <token>` も受け付ける
+  （`bearerToken()`）。Cookie を持てないクライアント（iOS ショートカット等）向けの経路で、
+  `/api/say` はこれを使う想定。
+
+## `/api/say`（ブラウザ以外向け）
+
+`/api/chat` は SSE 前提なので、SSE を読めないクライアント（iOS ショートカット等）向けに単発の
+`POST /api/say` を用意してある。会話履歴を持たず、`streamReply()` の delta をサーバー側で
+連結してプレーンテキストで一度に返すだけ。ここに履歴やストリーミングを足したくなったら、
+それはもう `/api/chat` の役目なので、`/api/say` を複雑にせず素直に `/api/chat` を使わせること。
 
 ## ブラウザ側の前提
 
