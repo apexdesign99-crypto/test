@@ -1,0 +1,25 @@
+{
+  "name": "voice-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude と音声で会話できる Web アプリ",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file-if-exists=.env dist/server.js",
+    "dev": "tsc -p tsconfig.json --watch & node --env-file-if-exists=.env --watch dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
