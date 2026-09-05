@@ -36,7 +36,14 @@ from .copycheck import review_copy
 from .instagram import POST_FORMATS, THEMES, InstagramError
 from .instagram_api import InstagramAPIError
 from .instagram_publish import PublishError
-from .plans import DEFAULT_DB, PlanError as PlanDbError, search_similar, stats as plan_stats
+from .plans import (
+    DEFAULT_DB,
+    PlanError as PlanDbError,
+    describe_schema as plan_schema,
+    record_plan,
+    search_similar,
+    stats as plan_stats,
+)
 from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
@@ -1057,9 +1064,58 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan_add(args: argparse.Namespace) -> int:
+    """図面から拾い出した 1 物件を、プランデータベースに書き込む。
+
+    値は JSON で渡す。図面から読み取れた項目だけを入れること。
+    埋めるために推測した値を入れると、後で類似検索がその推測を事例として返す。
+    """
+    source = Path(args.database) if args.database else DEFAULT_DB
+
+    raw = sys.stdin.read() if args.fields == "-" else args.fields
+    try:
+        fields = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(RED(f"JSON を読めません: {exc}"))
+        print(DIM('  例: \'{"階数":"2階","延床面積㎡":115.92,"間口m":10.92}\''))
+        return 1
+    if not isinstance(fields, dict):
+        print(RED("JSON はオブジェクト({\"列名\": 値, ...})で渡してください。"))
+        return 1
+
+    result = record_plan(
+        args.plan_id, fields, source=args.source, path=source,
+        replace=args.replace,
+    )
+    kind = "参考事例" if result["reference_case"] else "自社事例"
+    print(BOLD(f"{result['plan_id']} を登録しました") + DIM(f"  ({kind})"))
+    for name in result["written"]:
+        print(f"  {MARK['ok']} {name}")
+    print(DIM(f"\n  {result['note']}"))
+    if not result["reference_case"]:
+        print(DIM("  他社物件を入れる場合は --source で出典を付けてください。"
+                  "自社事例と混ざると、提案が他社の規格住宅に引きずられます。"))
+    return 0
+
+
 def cmd_plans(args: argparse.Namespace) -> int:
     """過去プランのデータベースを見る・検索する。"""
     source = Path(args.database) if args.database else DEFAULT_DB
+
+    if args.schema:
+        described = plan_schema(source)
+        print(BOLD("入力できる列") + DIM(f"  ({source})"))
+        for sheet, columns in described["sheets"].items():
+            print()
+            print(BOLD(f"  {sheet}"))
+            for column in columns:
+                choices = "、".join(column["選択肢"]) if column["選択肢"] else ""
+                print(f"    {_pad(column['列'], 16)}{DIM(choices)}"
+                      + (DIM("  ※同名の列が他シートにもあります") if column["重複"] else ""))
+        print()
+        print(DIM(f"  計算される列(書き込み不可): {'、'.join(described['computed'])}"))
+        print(DIM(f"  {described['note']}"))
+        return 0
 
     if args.stats or not any((args.site_area, args.frontage, args.floor_area,
                               args.road, args.shape, args.floors, args.family)):
@@ -1077,6 +1133,9 @@ def cmd_plans(args: argparse.Namespace) -> int:
         if result["sparse_fields"]:
             print(DIM(f"\n  半分以下しか埋まっていない項目: "
                       f"{'、'.join(result['sparse_fields'][:10])}"))
+        if result.get("reference_cases"):
+            print(DIM(f"\n  他社・外部の参考事例 {len(result['reference_cases'])} 件: "
+                      f"{'、'.join(result['reference_cases'][:10])}"))
         print(DIM(f"\n  {result['note']}"))
         return 0
 
@@ -1085,12 +1144,15 @@ def cmd_plans(args: argparse.Namespace) -> int:
         "延床面積坪": args.floor_area, "前面道路方向": args.road,
         "敷地形状": args.shape, "階数": args.floors, "家族人数": args.family,
     }
-    result = search_similar(criteria, limit=args.limit, path=source)
+    result = search_similar(criteria, limit=args.limit, path=source,
+                            include_reference=not args.own_only)
 
     shown = "、".join(f"{k} {v}" for k, v in result["criteria"].items())
     print(BOLD(f"条件に近い過去プラン") + DIM(f"  {shown}"))
     print(DIM(f"  全 {result['total_plans']} 件中、比較できたのは "
               f"{result['comparable']} 件"))
+    if result["excluded_reference"]:
+        print(DIM(f"  他社・外部の参考事例 {result['excluded_reference']} 件は除外しました"))
     print()
     if not result["results"]:
         print(DIM("  比較できるプランがありません。"
@@ -1099,7 +1161,8 @@ def cmd_plans(args: argparse.Namespace) -> int:
 
     for item in result["results"]:
         fields = item["fields"]
-        print(BOLD(f"  {item['plan_id']}") + f"  類似度 {item['similarity']}%")
+        label = DIM("  [参考]") if fields.get("参考事例") else ""
+        print(BOLD(f"  {item['plan_id']}") + f"  類似度 {item['similarity']}%" + label)
         summary = "  ".join(filter(None, [
             f"敷地 {fields['敷地面積坪']}坪" if fields.get("敷地面積坪") else "",
             f"延床 {fields['延床面積坪']}坪" if fields.get("延床面積坪") else "",
@@ -1111,6 +1174,8 @@ def cmd_plans(args: argparse.Namespace) -> int:
         print(f"      {summary}")
         if item["matched_on"]:
             print(DIM(f"      一致した項目: {'、'.join(item['matched_on'])}"))
+        if fields.get("出典"):
+            print(DIM(f"      出典: {fields['出典']}"))
     print(DIM(f"\n  ※ {result['caveat']}"))
     return 0
 
@@ -1644,7 +1709,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_plans.add_argument("--floors", choices=["平屋", "2階", "3階"], help="階数")
     p_plans.add_argument("--family", type=int, help="家族人数")
     p_plans.add_argument("--limit", type=int, default=3, help="件数(既定 3)")
+    p_plans.add_argument("--schema", action="store_true",
+                         help="入力できる列と選択肢の一覧を表示する")
+    p_plans.add_argument("--own-only", dest="own_only", action="store_true",
+                         help="他社・外部の参考事例を除き、自社事例だけで探す")
     p_plans.set_defaults(func=cmd_plans)
+
+    p_plan_add = sub.add_parser(
+        "plan-add", help="図面から拾い出した物件をプランデータベースに書き込む")
+    p_plan_add.add_argument("plan_id", help="物件ID(P0001 など)")
+    p_plan_add.add_argument(
+        "fields",
+        help='列名と値の JSON。- で標準入力から読む。'
+             '例: \'{"階数":"2階","延床面積㎡":115.92}\'')
+    p_plan_add.add_argument(
+        "--source",
+        help="他社・外部の資料から拾った場合の出典。備考欄に記録し、"
+             "その物件を参考事例として印を付ける。自社の図面には付けない")
+    p_plan_add.add_argument("--replace", action="store_true",
+                            help="既に同じ物件IDがあれば上書きする")
+    p_plan_add.add_argument("--database", help=f"ファイルの場所(既定 {DEFAULT_DB})")
+    p_plan_add.set_defaults(func=cmd_plan_add)
 
     p_land = sub.add_parser(
         "land", help="土地診断(建てられるボリュームの目安と、確認すべき論点)"

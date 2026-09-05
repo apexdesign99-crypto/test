@@ -914,3 +914,81 @@ def test_セキュリティ担当を採用できる(tmp_path, capsys):
     assert saved["role"] == "セキュリティ担当"
     assert "run_audit" in saved["tools"]
     assert saved["web_access"] is False
+
+
+# ------------------------------------------------- プランデータベースの拾い出し
+
+
+@pytest.fixture
+def プランDB(tmp_path):
+    import shutil
+
+    from ai_employee.plans import DEFAULT_DB
+
+    pytest.importorskip("openpyxl")
+    if not DEFAULT_DB.is_file():
+        pytest.skip("テンプレートが見つかりません")
+    path = tmp_path / "db.xlsx"
+    shutil.copy(DEFAULT_DB, path)
+    return str(path)
+
+
+def test_入力できる列を一覧できる(プランDB, tmp_path, capsys):
+    assert run(["plans", "--schema", "--database", プランDB], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "平屋、2階、3階" in out
+    assert "延床面積坪" in out  # 計算される列として案内される
+    assert "同名の列が他シートにもあります" in out
+
+
+def test_拾い出した物件を登録して検索できる(プランDB, tmp_path, capsys):
+    assert run(["plan-add", "P0001",
+                '{"階数":"2階","延床面積㎡":115.92,"間口m":10.92}',
+                "--database", プランDB], tmp_path) == 0
+    capsys.readouterr()
+
+    assert run(["plans", "--floor-area", "35", "--database", プランDB], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "P0001" in out
+    assert "[参考]" not in out
+
+
+def test_出典つきで登録すると参考事例として表示される(プランDB, tmp_path, capsys):
+    assert run(["plan-add", "P0001", '{"延床面積㎡":115.92}',
+                "--source", "他社の販売図面", "--database", プランDB], tmp_path) == 0
+    assert "参考事例" in capsys.readouterr().out
+
+    run(["plans", "--floor-area", "35", "--database", プランDB], tmp_path)
+    out = capsys.readouterr().out
+    assert "[参考]" in out
+    assert "出典: 他社の販売図面" in out
+
+    # 自社事例だけに絞ると消える
+    run(["plans", "--floor-area", "35", "--own-only", "--database", プランDB], tmp_path)
+    out = capsys.readouterr().out
+    assert "P0001" not in out
+    assert "1 件は除外しました" in out
+
+
+def test_壊れた_JSON_は使い方を示して止まる(プランDB, tmp_path, capsys):
+    assert run(["plan-add", "P0001", "{階数:2階}", "--database", プランDB], tmp_path) == 1
+    out = capsys.readouterr().out
+    assert "JSON を読めません" in out
+    assert "例:" in out
+
+
+def test_JSON_がオブジェクトでなければ拒否される(プランDB, tmp_path, capsys):
+    assert run(["plan-add", "P0001", '["2階"]', "--database", プランDB], tmp_path) == 1
+    assert "オブジェクト" in capsys.readouterr().out
+
+
+def test_選択肢にない値は理由を示して止まる(プランDB, tmp_path, capsys):
+    assert run(["plan-add", "P0001", '{"階数":"二階建て"}',
+                "--database", プランDB], tmp_path) == 1
+    assert "平屋" in capsys.readouterr().err
+
+
+def test_個人情報を含む値は書き込まれない(プランDB, tmp_path, capsys):
+    assert run(["plan-add", "P0001", '{"備考":"山田様 090-1234-5678"}',
+                "--database", プランDB], tmp_path) == 1
+    assert "入力できません" in capsys.readouterr().err

@@ -368,12 +368,13 @@ def build_tools(
         階数: str | None = None,
         家族人数: int | None = None,
         limit: int = 3,
+        自社事例のみ: bool = False,
     ) -> dict:
         return _search_plans({
             "敷地面積坪": 敷地面積坪, "間口m": 間口m, "延床面積坪": 延床面積坪,
             "前面道路方向": 前面道路方向, "敷地形状": 敷地形状,
             "階数": 階数, "家族人数": 家族人数,
-        }, limit=limit)
+        }, limit=limit, include_reference=not 自社事例のみ)
 
     def plan_database_stats() -> dict:
         return _plan_stats()
@@ -1017,7 +1018,9 @@ def build_tools(
             "過去の住宅プランのデータベースから、敷地条件に近い事例を探す。"
             "プラン提案の前に、似た条件で過去にどう解いたかを確認すること。"
             "**似た事例があることは、その敷地でその案が成立することを意味しない。**"
-            "法規・地盤・予算・施主の要望は別途確認が必要である旨を必ず添えること。",
+            "法規・地盤・予算・施主の要望は別途確認が必要である旨を必ず添えること。"
+            "結果に reference_hits がある事例は他社・外部の参考事例なので、"
+            "自社の設計方針として語らず、他社事例であることを明示すること。",
             _obj(
                 {
                     "敷地面積坪": {"type": "number", "description": "敷地面積(坪)"},
@@ -1040,6 +1043,11 @@ def build_tools(
                     },
                     "家族人数": {"type": "integer", "description": "家族人数"},
                     "limit": {"type": "integer", "description": "件数(既定 3)"},
+                    "自社事例のみ": {
+                        "type": "boolean",
+                        "description": "他社・外部の参考事例(備考に出典があるもの)を"
+                        "除いて、自社の設計事例だけから探す",
+                    },
                 },
                 [],
             ),
