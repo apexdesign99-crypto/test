@@ -101,3 +101,35 @@ def workspace(tmp_path) -> Workspace:
 @pytest.fixture
 def profile(workspace):
     return workspace.load_profile()
+
+
+@pytest.fixture
+def テンプレート(tmp_path):
+    """事務所のプラン台帳を複製し、事例を空にして渡す。
+
+    数式・入力規則は本物でないと意味がないので簡易版では代用しない。
+    一方、出荷ファイルに入っている事例はテストの前提にしない——
+    拾い出しをするたびにテストが落ちることになる。
+    """
+    import shutil
+
+    from ai_employee.plans import DEFAULT_DB
+
+    pytest.importorskip("openpyxl")
+    if not DEFAULT_DB.is_file():
+        pytest.skip("テンプレートが見つかりません")
+    path = tmp_path / "db.xlsx"
+    shutil.copy(DEFAULT_DB, path)
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path)  # data_only=False——数式は残す
+    for sheet in workbook.worksheets:
+        if not sheet.title.startswith(("①", "②", "③", "④", "⑤", "⑥")):
+            continue
+        for row in sheet.iter_rows(min_row=2):
+            for cell in row:
+                if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                    cell.value = None
+    workbook.save(path)
+    return path

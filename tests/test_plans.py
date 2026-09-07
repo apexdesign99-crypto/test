@@ -189,26 +189,10 @@ def test_主軸の項目を優先するよう促す(tmp_path):
 
 # ------------------------------------------------------ 書き込み(拾い出し)
 
-import shutil  # noqa: E402 - 書き込みのテストだけで使う
-
 from ai_employee.plans import (  # noqa: E402
-    DEFAULT_DB,
     describe_schema,
     record_plan,
 )
-
-
-@pytest.fixture
-def テンプレート(tmp_path):
-    """事務所のテンプレートを複製する。
-
-    数式・入力規則は本物でないと意味がないので、簡易版では代用しない。
-    """
-    if not DEFAULT_DB.is_file():
-        pytest.skip("テンプレートが見つかりません")
-    path = tmp_path / "db.xlsx"
-    shutil.copy(DEFAULT_DB, path)
-    return path
 
 
 def test_図面から読めた項目だけを書き込める(テンプレート):

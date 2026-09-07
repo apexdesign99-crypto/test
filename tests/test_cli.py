@@ -920,17 +920,8 @@ def test_セキュリティ担当を採用できる(tmp_path, capsys):
 
 
 @pytest.fixture
-def プランDB(tmp_path):
-    import shutil
-
-    from ai_employee.plans import DEFAULT_DB
-
-    pytest.importorskip("openpyxl")
-    if not DEFAULT_DB.is_file():
-        pytest.skip("テンプレートが見つかりません")
-    path = tmp_path / "db.xlsx"
-    shutil.copy(DEFAULT_DB, path)
-    return str(path)
+def プランDB(テンプレート):
+    return str(テンプレート)
 
 
 def test_入力できる列を一覧できる(プランDB, tmp_path, capsys):
@@ -992,3 +983,12 @@ def test_個人情報を含む値は書き込まれない(プランDB, tmp_path,
     assert run(["plan-add", "P0001", '{"備考":"山田様 090-1234-5678"}',
                 "--database", プランDB], tmp_path) == 1
     assert "入力できません" in capsys.readouterr().err
+
+
+def test_一覧を打ち切るときは残り件数を添える():
+    from ai_employee.cli import _listed
+
+    assert _listed(["A", "B"]) == "A、B"
+    assert _listed([f"P{i}" for i in range(10)]) == "、".join(f"P{i}" for i in range(10))
+    # 打ち切った件数を黙って落とすと、表示された数が全部だと読まれてしまう。
+    assert _listed([f"P{i}" for i in range(13)]).endswith("、ほか 3 件")

@@ -214,6 +214,14 @@ def _ralign(text: str, width: int) -> str:
     return " " * max(0, width - _width(text)) + text
 
 
+def _listed(items: list, limit: int = 10) -> str:
+    """並べて表示する。打ち切ったときは残りの件数を必ず添える。
+    黙って切ると、表示された数が全部だと読まれてしまう。"""
+    head = "、".join(str(i) for i in items[:limit])
+    rest = len(items) - limit
+    return f"{head}、ほか {rest} 件" if rest > 0 else head
+
+
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _COLOR else text
 
@@ -1132,10 +1140,10 @@ def cmd_plans(args: argparse.Namespace) -> int:
             print(f"    {_pad(key, 18)}{rate:>4}%  {CYAN(bar)}")
         if result["sparse_fields"]:
             print(DIM(f"\n  半分以下しか埋まっていない項目: "
-                      f"{'、'.join(result['sparse_fields'][:10])}"))
+                      f"{_listed(result['sparse_fields'])}"))
         if result.get("reference_cases"):
             print(DIM(f"\n  他社・外部の参考事例 {len(result['reference_cases'])} 件: "
-                      f"{'、'.join(result['reference_cases'][:10])}"))
+                      f"{_listed(result['reference_cases'])}"))
         print(DIM(f"\n  {result['note']}"))
         return 0
 
