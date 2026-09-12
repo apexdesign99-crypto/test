@@ -12,6 +12,10 @@ dependencies = ["anthropic>=1.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# プラン台帳の読み書き(plans / plan-add)に要る。
+plans = ["openpyxl>=3.1"]
+# 航空写真への重ね合わせ(aerial)に要る。
+aerial = ["Pillow>=10"]
 
 [project.scripts]
 ai-employee = "ai_employee.cli:main"

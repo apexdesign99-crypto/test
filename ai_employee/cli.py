@@ -44,6 +44,14 @@ from .plans import (
     search_similar,
     stats as plan_stats,
 )
+from .aerial import (
+    ENV_API_KEY,
+    AerialError,
+    MapSpec,
+    Overlay,
+    plan_overlay,
+    render,
+)
 from .instagram_plan import PLAN_MIXES, POST_STATUSES, InstagramPlan, PlanError
 from .land import RELAXATIONS, ZONING_TYPES, LandConditions, LandError, diagnose
 from .profile import DEFAULT_TEAM, TEMPLATES, EmployeeProfile, build_profile, slugify
@@ -1106,6 +1114,77 @@ def cmd_plan_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _overlays_from(args: argparse.Namespace) -> list[Overlay]:
+    """--building の指定を Overlay に組む。
+
+    1 つの敷地に複数棟を置けるよう、繰り返し指定できるようにしてある。
+    """
+    overlays = []
+    for spec in args.building:
+        parts = spec.split(",")
+        if len(parts) not in (5, 6, 7):
+            raise AerialError(
+                "--building は 画像,緯度,経度,間口m,奥行m[,方位角[,不透明度]] "
+                f"の順で指定してください(受け取った項目数 {len(parts)}): {spec}"
+            )
+        image, *numbers = (p.strip() for p in parts)
+        try:
+            values = [float(n) for n in numbers]
+        except ValueError:
+            raise AerialError(f"--building の数値を読めません: {spec}") from None
+        latitude, longitude, width_m, depth_m = values[:4]
+        overlays.append(Overlay(
+            image=image, latitude=latitude, longitude=longitude,
+            width_m=width_m, depth_m=depth_m,
+            bearing=values[4] if len(values) > 4 else 0.0,
+            opacity=values[5] if len(values) > 5 else 1.0,
+        ))
+    return overlays
+
+
+def cmd_aerial(args: argparse.Namespace) -> int:
+    """航空写真に建物を実寸で重ねて PNG を書き出す。"""
+    spec = MapSpec(
+        latitude=args.lat, longitude=args.lon, zoom=args.zoom,
+        width=args.width, height=args.height, scale=args.scale,
+        maptype=args.maptype,
+    )
+    overlays = _overlays_from(args)
+
+    if args.dry_run:
+        # 位置と縮尺だけ確かめる。API は叩かないので課金もされない。
+        print(BOLD("配置の検算") + DIM(f"  zoom={spec.zoom} scale={spec.scale}"))
+        for overlay in overlays:
+            geometry = plan_overlay(spec, overlay)
+            width_px, depth_px = geometry["size_px"]
+            dx, dy = geometry["offset_px"]
+            print(f"\n  {overlay.image}")
+            print(f"    1画素 = {geometry['metres_per_pixel']:.3f}m")
+            print(f"    {overlay.width_m}m×{overlay.depth_m}m "
+                  f"→ {width_px:.0f}×{depth_px:.0f} 画素  方位角 {overlay.bearing:.0f}°")
+            print(f"    地図中心からのずれ {dx:+.0f}, {dy:+.0f} 画素 "
+                  f"(約 {geometry['distance_m']:.0f}m)")
+            for warning in geometry["warnings"]:
+                print(RED(f"    ! {warning}"))
+        print(DIM("\n  --dry-run のため写真は取得していません。"))
+        return 0
+
+    result = render(spec, overlays, args.output, key=args.api_key)
+    print(BOLD(f"{result['path']} を書き出しました")
+          + DIM(f"  {result['canvas'][0]}×{result['canvas'][1]} 画素"))
+    print(DIM(f"  1画素 = {result['metres_per_pixel']:.3f}m"))
+    for placement in result["placements"]:
+        print(f"  {MARK['ok']} {placement['image']}  "
+              f"{placement['size_px'][0]}×{placement['size_px'][1]} 画素  "
+              f"方位角 {placement['bearing']:.0f}°")
+    for warning in result["warnings"]:
+        print(RED(f"  ! {warning}"))
+    print(DIM(f"\n  {result['attribution']}(帰属表示は下端に残してあります)"))
+    print(DIM(f"  {result['caveat']}"))
+    return 0
+
+
+
 def cmd_plans(args: argparse.Namespace) -> int:
     """過去プランのデータベースを見る・検索する。"""
     source = Path(args.database) if args.database else DEFAULT_DB
@@ -1739,6 +1818,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_plan_add.add_argument("--database", help=f"ファイルの場所(既定 {DEFAULT_DB})")
     p_plan_add.set_defaults(func=cmd_plan_add)
 
+    p_aerial = sub.add_parser(
+        "aerial", help="航空写真に建物を実寸で重ねた検討イメージを作る")
+    p_aerial.add_argument("--lat", type=float, required=True, help="地図中心の緯度")
+    p_aerial.add_argument("--lon", type=float, required=True, help="地図中心の経度")
+    p_aerial.add_argument(
+        "--building", action="append", required=True, metavar="指定",
+        help="重ねる建物。画像,緯度,経度,間口m,奥行m[,方位角[,不透明度]]。"
+             "画像は上が真北・横が間口の向きで、余白は透過にしておく。"
+             "複数棟を置くときは繰り返す")
+    p_aerial.add_argument("-o", "--output", default="配置イメージ.png",
+                          help="書き出す PNG の場所(既定 配置イメージ.png)")
+    p_aerial.add_argument("--zoom", type=int, default=19,
+                          help="ズーム(既定 19。20〜21 で敷地 1 区画程度)")
+    p_aerial.add_argument("--width", type=int, default=640, help="幅(画素、最大 640)")
+    p_aerial.add_argument("--height", type=int, default=640, help="高さ(画素、最大 640)")
+    p_aerial.add_argument("--scale", type=int, default=2, choices=(1, 2),
+                          help="解像度倍率(既定 2。実寸は変わらず画素だけ細かくなる)")
+    p_aerial.add_argument("--maptype", default="satellite",
+                          choices=("satellite", "hybrid", "roadmap", "terrain"),
+                          help="地図の種類(既定 satellite)")
+    p_aerial.add_argument("--api-key", dest="api_key",
+                          help=f"Google Maps の API キー(既定は環境変数 {ENV_API_KEY})")
+    p_aerial.add_argument("--dry-run", dest="dry_run", action="store_true",
+                          help="写真を取得せず、位置と縮尺の検算だけ出す")
+    p_aerial.set_defaults(func=cmd_aerial)
+
     p_land = sub.add_parser(
         "land", help="土地診断(建てられるボリュームの目安と、確認すべき論点)"
     )
@@ -1889,7 +1994,7 @@ def main(argv: list[str] | None = None) -> int:
         return args.func(args)
     except (WorkspaceError, CompanyError, LandError, CompetitorError,
             InstagramError, PlanError, InstagramAPIError, PublishError,
-            PlanDbError) as exc:
+            PlanDbError, AerialError) as exc:
         print(RED(str(exc)), file=sys.stderr)
         return 1
     except ValueError as exc:

@@ -992,3 +992,47 @@ def test_一覧を打ち切るときは残り件数を添える():
     assert _listed([f"P{i}" for i in range(10)]) == "、".join(f"P{i}" for i in range(10))
     # 打ち切った件数を黙って落とすと、表示された数が全部だと読まれてしまう。
     assert _listed([f"P{i}" for i in range(13)]).endswith("、ほか 3 件")
+
+
+# ------------------------------------------------- 航空写真への重ね合わせ
+
+
+@pytest.fixture
+def 建物PNG(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
+    path = tmp_path / "building.png"
+    Image.new("RGBA", (200, 100), (255, 255, 255, 255)).save(path)
+    return str(path)
+
+
+def test_配置を検算だけできる(建物PNG, tmp_path, capsys):
+    assert run(["aerial", "--lat", "35.1815", "--lon", "136.9066", "--zoom", "20",
+                "--building", f"{建物PNG},35.1815,136.9066,10.92,6.37,15",
+                "--dry-run"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "1画素 = 0.061m" in out          # 緯度補正が効いている
+    assert "179×104 画素" in out            # 10.92m / 0.061
+    assert "方位角 15" in out
+
+
+def test_建物の指定が壊れていれば理由を示す(建物PNG, tmp_path, capsys):
+    assert run(["aerial", "--lat", "35.1", "--lon", "136.9",
+                "--building", f"{建物PNG},35.1,136.9", "--dry-run"], tmp_path) == 1
+    assert "間口m,奥行m" in capsys.readouterr().err
+
+
+def test_数値でない指定を弾く(建物PNG, tmp_path, capsys):
+    assert run(["aerial", "--lat", "35.1", "--lon", "136.9",
+                "--building", f"{建物PNG},35.1,136.9,十間,6.37",
+                "--dry-run"], tmp_path) == 1
+    assert "数値を読めません" in capsys.readouterr().err
+
+
+def test_APIキーがなければ取得前に止まる(建物PNG, tmp_path, capsys, monkeypatch):
+    from ai_employee.aerial import ENV_API_KEY
+
+    monkeypatch.delenv(ENV_API_KEY, raising=False)
+    assert run(["aerial", "--lat", "35.1815", "--lon", "136.9066",
+                "--building", f"{建物PNG},35.1815,136.9066,10.92,6.37",
+                "-o", str(tmp_path / "out.png")], tmp_path) == 1
+    assert ENV_API_KEY in capsys.readouterr().err
