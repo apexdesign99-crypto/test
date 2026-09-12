@@ -54,6 +54,9 @@ MIN_BUILDING_PIXELS = 8
 # 地図の中心からこれ以上離れた建物は、指定間違いを疑う。
 FAR_FROM_CENTRE_M = 2_000
 
+# 元画像をこれ以上引き伸ばすと、輪郭がぼけて図面として読めなくなる。
+UPSCALE_WARNING = 1.5
+
 ATTRIBUTION = "地図データ ©Google"
 
 
@@ -267,12 +270,32 @@ def _pillow():
     return Image
 
 
+def _open_art(path: Path):
+    """重ねる画像を開く。開けない理由を日本語で返す。
+
+    シンボリックリンクは OS が解決するのでそのまま通る。一方、Windows の
+    ショートカット(.lnk)と macOS のエイリアスは「画像を指す小さなファイル」
+    であって画像ではないため、ここで止まる。
+    """
+    Image = _pillow()
+    try:
+        return Image.open(path)
+    except Exception:
+        raise AerialError(
+            f"画像として読めません: {path}。"
+            f"Windows のショートカット(.lnk)や macOS のエイリアスは画像そのもの"
+            f"ではないので使えません。PNG の実体を指定するか、"
+            f"シンボリックリンク(ln -s / mklink)にしてください。"
+        ) from None
+
+
 def plan_overlay(spec: MapSpec, overlay: Overlay) -> dict[str, Any]:
     """合成せずに、その建物がどこに何画素で載るかだけを計算する。
 
     取得の前に確かめられるようにしておく。API を叩いてから
     「小さすぎて読めない」と分かるのは無駄。
     """
+    source = _open_art(overlay.image).size
     mpp = metres_per_pixel(overlay.latitude, spec.zoom, spec.scale)
     width_px = overlay.width_m / mpp
     depth_px = overlay.depth_m / mpp
@@ -305,8 +328,14 @@ def plan_overlay(spec: MapSpec, overlay: Overlay) -> dict[str, Any]:
             f"建物が地図中心から約 {away / 1000:.1f}km 離れています。"
             f"緯度経度の取り違えを疑ってください。"
         )
+    if max(width_px / source[0], depth_px / source[1]) > UPSCALE_WARNING:
+        warnings.append(
+            f"元画像 {source[0]}×{source[1]} を "
+            f"{width_px:.0f}×{depth_px:.0f} に引き伸ばします。輪郭がぼけます。"
+        )
     return {
         "metres_per_pixel": mpp,
+        "source_px": source,
         "size_px": (width_px, depth_px),
         "offset_px": (dx, dy),
         "centre_px": centre_px,
@@ -316,7 +345,7 @@ def plan_overlay(spec: MapSpec, overlay: Overlay) -> dict[str, Any]:
 
 
 def _place(canvas, overlay: Overlay, geometry: dict[str, Any], Image) -> None:
-    art = Image.open(overlay.image).convert("RGBA")
+    art = _open_art(overlay.image).convert("RGBA")
     width_px, depth_px = geometry["size_px"]
     art = art.resize((max(1, round(width_px)), max(1, round(depth_px))),
                      Image.LANCZOS)

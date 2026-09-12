@@ -328,3 +328,55 @@ def test_配置図ではないと明記される(建物画像, tmp_path):
     assert "確定測量図" in caveat
     assert "所管行政庁" in caveat
     assert "Google" in caveat
+
+
+# ---------------------------------------------------------- ショートカット
+
+
+def test_シンボリックリンクは画像として通る(建物画像, tmp_path):
+    """OS がリンクを解決するので、実体を指していれば普通に使える。"""
+    link = tmp_path / "リンク.png"
+    link.symlink_to(建物画像)
+    geometry = plan_overlay(spec(), overlay(link))
+    assert geometry["source_px"] == (200, 100)
+
+
+def test_画像でないショートカットは理由を示す(tmp_path):
+    """Windows の .lnk は「画像を指す小さなファイル」で、画像ではない。
+
+    以前はここを素通りして、合成の直前に PIL の英語例外で落ちていた。
+    """
+    lnk = tmp_path / "外形.png.lnk"
+    lnk.write_bytes(b"L\x00\x00\x00\x01\x14\x02\x00")  # .lnk のヘッダ
+    with pytest.raises(AerialError, match="ショートカット"):
+        plan_overlay(spec(), overlay(lnk))
+
+
+def test_壊れた画像も取得前に止まる(tmp_path, 建物画像):
+    """API を叩いてから PIL が落ちると、課金だけされて何も残らない。"""
+    壊れ = tmp_path / "壊れ.png"
+    壊れ.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+    def transport(url):
+        raise AssertionError("画像が読めないのに取得しに行った")
+
+    with pytest.raises(AerialError, match="画像として読めません"):
+        render(spec(), [overlay(壊れ)], tmp_path / "out.png",
+               key="k", transport=transport)
+
+
+def test_元画像の引き伸ばしを警告する(tmp_path):
+    """粗い画像を拡大すると輪郭がぼけ、図面として読めなくなる。"""
+    小さい = tmp_path / "小.png"
+    Image.new("RGBA", (40, 24), (255, 255, 255, 255)).save(小さい)
+    geometry = plan_overlay(spec(), overlay(小さい))
+    assert any("引き伸ばします" in w for w in geometry["warnings"])
+    # 元が十分大きければ黙っている。
+    assert not any("引き伸ばします" in w
+                   for w in plan_overlay(spec(), overlay(建物画像_大(tmp_path)))["warnings"])
+
+
+def 建物画像_大(tmp_path):
+    path = tmp_path / "大.png"
+    Image.new("RGBA", (600, 350), (255, 255, 255, 255)).save(path)
+    return path

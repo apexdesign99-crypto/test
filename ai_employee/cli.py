@@ -1161,7 +1161,9 @@ def cmd_aerial(args: argparse.Namespace) -> int:
             print(f"\n  {overlay.image}")
             print(f"    1画素 = {geometry['metres_per_pixel']:.3f}m")
             print(f"    {overlay.width_m}m×{overlay.depth_m}m "
-                  f"→ {width_px:.0f}×{depth_px:.0f} 画素  方位角 {overlay.bearing:.0f}°")
+                  f"→ {width_px:.0f}×{depth_px:.0f} 画素  方位角 {overlay.bearing:.0f}°"
+                  + DIM(f"  (元画像 {geometry['source_px'][0]}×"
+                        f"{geometry['source_px'][1]})"))
             print(f"    地図中心からのずれ {dx:+.0f}, {dy:+.0f} 画素 "
                   f"(約 {geometry['distance_m']:.0f}m)")
             for warning in geometry["warnings"]:
