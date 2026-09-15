@@ -24,6 +24,24 @@ from .instagram_api import load_credentials, load_metrics
 from .instagram_plan import InstagramPlan
 from .workspace import Workspace, roster
 
+# Host ヘッダに現れてよい名前。これ以外は外から来たものとして断る。
+LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _loopback(host: str) -> bool:
+    """Host ヘッダがループバックの名前を指しているか。
+
+    `[::1]:8765` のような IPv6 表記も来る。角括弧の中を取り出してから
+    比べないと、括弧ごと名前として扱って正しい要求まで断ってしまう。
+    """
+    host = host.strip()
+    if host.startswith("["):
+        name, _, _ = host[1:].partition("]")
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return name.lower() in LOOPBACK_NAMES
+
+
 NAV = (
     ("/", "ダッシュボード"),
     ("/projects", "案件"),
@@ -653,10 +671,47 @@ def make_handler(root: Path) -> type[BaseHTTPRequestHandler]:
             # 閲覧専用の画面なので埋め込みも外部参照もさせない
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            # この画面は自前の <style> しか使わない。他は一切読み込ませない。
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'; "
+                "form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
+            )
+            # 施主の氏名・住所が載る。ブラウザのキャッシュに残さない。
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(payload)
 
+        def _from_outside(self) -> str | None:
+            """外から来た要求なら、断る理由を返す。
+
+            127.0.0.1 で待ち受けていても安全ではない。攻撃者は自分のドメインを
+            127.0.0.1 に向け直せる(DNS リバインディング)。すると利用者が開いた
+            悪意あるページの JavaScript が、そのドメイン宛にこの画面を読み出せる。
+            同一オリジン扱いになるので、応答——施主の氏名・住所・電話——が
+            そのまま読み取られる。X-Frame-Options では fetch を止められない。
+
+            防ぎ方は、Host が本当にループバックの名前かを見ること。
+            リバインディングでは Host に攻撃者のドメインが入る。
+            """
+            host = (self.headers.get("Host") or "").strip()
+            if not _loopback(host):
+                return f"Host ヘッダが不正です: {host or '(なし)'}"
+            # 他サイトからの fetch。ブラウザが付けてくれる場合だけ効く。
+            if (self.headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+                return "他のサイトからの読み出しは許可していません。"
+            return None
+
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler の規約
+            refusal = self._from_outside()
+            if refusal is not None:
+                self._send(page("拒否", "/", f"<h1>開けません</h1>"
+                                f'<p class="alert">{esc(refusal)}</p>'
+                                '<p class="basis">この画面は、同じ端末のブラウザから '
+                                'http://127.0.0.1:ポート/ で開いてください。</p>',
+                                "AI社員"), 403)
+                return
             path = urlparse(self.path).path.rstrip("/") or "/"
             office_name = views.office.name
             try:

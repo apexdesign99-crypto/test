@@ -44,6 +44,7 @@ from .plans import (
     search_similar,
     stats as plan_stats,
 )
+from .tools import unfence
 from .aerial import (
     ENV_API_KEY,
     AerialError,
@@ -271,11 +272,15 @@ class ConsoleListener(Listener):
         print(CYAN(f"\n  {MARK['tool']} {name} {preview}"), flush=True)
 
     def on_tool_result(self, name: str, output: str, is_error: bool) -> None:
-        head = output.splitlines()[0] if output else ""
+        # 社員には囲ったまま渡すが、画面には中身を出す。
+        # 1 行目が囲いの札だと、結果が何も見えなくなる。
+        body = unfence(output)
+        外部 = DIM("[外部] ") if body != output else ""
+        head = body.splitlines()[0] if body else ""
         if len(head) > 120:
             head = head[:117] + "..."
         mark = RED(f"  {MARK['ng']} ") if is_error else DIM(f"  {MARK['ok']} ")
-        print(mark + (RED(head) if is_error else DIM(head)), flush=True)
+        print(mark + 外部 + (RED(head) if is_error else DIM(head)), flush=True)
 
     def on_notice(self, message: str) -> None:
         print(RED(f"\n[通知] {message}"), flush=True)

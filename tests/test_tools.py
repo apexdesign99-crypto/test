@@ -1,5 +1,7 @@
 import json
 
+from ai_employee.tools import unfence
+
 import pytest
 
 from ai_employee.tools import ToolBox, build_tools
@@ -41,7 +43,7 @@ def test_ツール実行結果は_JSON_で返る(workspace):
     box.run("record_note", {"title": "商談", "body": "A社", "tags": ["a社"]})
     output, is_error = box.run("search_notes", {"query": "A社"})
     assert not is_error
-    assert json.loads(output)["count"] == 1
+    assert json.loads(unfence(output))["count"] == 1
 
 
 def test_引数不足は例外ではなくエラー結果になる(workspace):
@@ -89,6 +91,7 @@ def test_案件ツールは台帳を共有する(workspace, tmp_path):
     shukyaku.run("add_project", {"name": "田中邸 新築", "source": "HP問い合わせ"})
     output, is_error = eigyo.run("list_projects", {})
     assert not is_error
+    output = unfence(output)
     assert json.loads(output)["projects"][0]["name"] == "田中邸 新築"
 
 
@@ -111,9 +114,9 @@ def test_一覧は履歴を含めず全文は_get_project_で取る(workspace, t
         workspace, ["add_project", "list_projects", "get_project"], ledger=ProjectLedger(tmp_path)
     )
     pid = json.loads(box.run("add_project", {"name": "田中邸 新築"})[0])["id"]
-    listed = json.loads(box.run("list_projects", {})[0])["projects"][0]
+    listed = json.loads(unfence(box.run("list_projects", {})[0]))["projects"][0]
     assert "history" not in listed
-    assert json.loads(box.run("get_project", {"project_id": pid})[0])["history"]
+    assert json.loads(unfence(box.run("get_project", {"project_id": pid})[0]))["history"]
 
 
 def test_更新理由なしの案件更新はエラー結果になる(workspace, tmp_path):
@@ -150,7 +153,7 @@ def test_メモを案件で絞り込める(workspace, tmp_path):
     box.run("record_note", {"title": "初回相談", "body": "予算未確認", "project_id": pid})
     box.run("record_note", {"title": "社内会議", "body": "案件と無関係"})
 
-    hits = json.loads(box.run("search_notes", {"project_id": pid})[0])
+    hits = json.loads(unfence(box.run("search_notes", {"project_id": pid})[0]))
     assert hits["count"] == 1
     assert hits["notes"][0]["title"] == "初回相談"
 
@@ -511,7 +514,7 @@ def test_競合を登録して一覧できる(workspace, tmp_path):
         "sources": ["https://example.com/a"], "company_type": "工務店",
         "appeal_axes": ["価格の安さ"],
     })
-    result = json.loads(box.run("list_competitors", {"area": "愛知"})[0])
+    result = json.loads(unfence(box.run("list_competitors", {"area": "愛知"})[0]))
     assert result["count"] == 1
     assert result["competitors"][0]["researched_by"] == workspace.employee_id
 

@@ -342,3 +342,66 @@ def test_指摘がなくても安全だとは書かない(tmp_path):
     html = Views(tmp_path).audit_view()
     assert "今回の点検では指摘はありませんでした" in html
     assert "安全性の保証ではない" in html
+
+
+# ------------------------------------------------- 外部からの読み出しを断る
+
+
+def raw_get(httpd, path: str, headers: dict) -> tuple[int, str]:
+    """ヘッダを自分で組んで投げる。urlopen だと Host を差し替えられない。"""
+    import http.client
+
+    port = httpd.server_address[1]
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.putrequest("GET", path, skip_host=True, skip_accept_encoding=True)
+    for key, value in headers.items():
+        conn.putheader(key, value)
+    conn.endheaders()
+    response = conn.getresponse()
+    body = response.read().decode("utf-8")
+    conn.close()
+    return response.status, body
+
+
+def test_Hostが攻撃者のドメインなら断る(server):
+    """DNS リバインディング。127.0.0.1 で待っていても、攻撃者は自分の
+    ドメインをここに向け直せる。そのとき Host に残るのは攻撃者のドメイン。"""
+    status, body = raw_get(server, "/", {"Host": "evil.example:8765"})
+    assert status == 403
+    assert "Host ヘッダが不正です" in body
+    assert "田中" not in body  # 台帳の中身を一切返していない
+
+
+def test_ループバックの名前なら開ける(server):
+    for host in ("127.0.0.1:9999", "localhost:9999", "127.0.0.1", "[::1]:9999"):
+        status, _ = raw_get(server, "/", {"Host": host})
+        assert status == 200, host
+
+
+def test_Hostがなければ断る(server):
+    assert raw_get(server, "/", {})[0] == 403
+
+
+def test_他サイトからの読み出しを断る(server):
+    status, body = raw_get(server, "/", {"Host": "127.0.0.1:9999",
+                                         "Sec-Fetch-Site": "cross-site"})
+    assert status == 403
+    assert "他のサイト" in body
+    assert raw_get(server, "/", {"Host": "127.0.0.1:9999",
+                                 "Sec-Fetch-Site": "same-origin"})[0] == 200
+
+
+def test_防御用のヘッダを付けて返す(server):
+    import http.client
+
+    port = server.server_address[1]
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/")
+    response = conn.getresponse()
+    headers = {k.lower(): v for k, v in response.getheaders()}
+    conn.close()
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["x-frame-options"] == "DENY"
+    assert "default-src 'none'" in headers["content-security-policy"]
+    # 施主の氏名・住所が載るのでブラウザに残さない
+    assert headers["cache-control"] == "no-store"
